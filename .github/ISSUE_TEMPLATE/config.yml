@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Mollie API question
+    url: https://docs.mollie.com
+    about: For questions about Mollie itself rather than this wrapper.

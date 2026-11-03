@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest something this library should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        This library deliberately stays small: products, orders, payments,
+        refunds, delivery. Anything that belongs in your own catalog or
+        application layer is likely out of scope — see the README's Scope
+        section before filing.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the current API makes hard?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      render: typescript
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead

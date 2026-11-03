@@ -1,0 +1,48 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the `CommerceError` code and message if there was one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Ideally a snippet using `FakePaymentGateway` and `InMemoryDatabase`, so
+        it runs without a Mollie account. See `examples/quickstart.ts`.
+      render: typescript
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: mollie-ecommerce version
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Bun version
+      description: Output of `bun --version`.
+
+  - type: input
+    id: storage
+    attributes:
+      label: Storage adapter
+      description: InMemoryDatabase, SqliteDatabase, or your own.

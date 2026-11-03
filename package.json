@@ -1,0 +1,67 @@
+{
+  "name": "mollie-ecommerce",
+  "version": "0.1.0",
+  "description": "A product, order and delivery lifecycle layer over Mollie \u2014 the minimum an ecommerce flow needs.",
+  "keywords": [
+    "mollie",
+    "ecommerce",
+    "payments",
+    "checkout",
+    "refund",
+    "orders",
+    "products",
+    "fulfillment",
+    "bun",
+    "typescript"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/alexandre-dos-reis/mollie-ecommerce#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexandre-dos-reis/mollie-ecommerce.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexandre-dos-reis/mollie-ecommerce/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./storage/memory": "./src/storage/memory.ts",
+    "./storage/sqlite": "./src/storage/sqlite.ts",
+    "./storage/rows": "./src/storage/rows.ts",
+    "./storage/conformance": "./src/storage/conformance.ts"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test",
+    "example": "bun run examples/quickstart.ts"
+  },
+  "dependencies": {
+    "mollie-api-typescript": "^1.12.44"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "7.0.2"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  }
+}
