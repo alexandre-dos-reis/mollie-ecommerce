@@ -1,7 +1,7 @@
 {
   "name": "mollie-ecommerce",
-  "version": "0.2.0",
-  "description": "A product, order and delivery lifecycle layer over Mollie \u2014 the minimum an ecommerce flow needs.",
+  "version": "0.3.0",
+  "description": "A SKU, order and delivery lifecycle layer over Mollie \u2014 the minimum an ecommerce flow needs.",
   "keywords": [
     "mollie",
     "ecommerce",
@@ -9,7 +9,9 @@
     "checkout",
     "refund",
     "orders",
-    "products",
+    "sku",
+    "variants",
+    "inventory",
     "fulfillment",
     "postgres",
     "sqlite",

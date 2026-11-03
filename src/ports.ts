@@ -5,7 +5,7 @@ import type {
   Order,
   OrderLine,
   PaymentState,
-  Product,
+  Sku,
 } from "./types.ts";
 
 /* ----------------------------------------------------------------- storage */
@@ -24,41 +24,44 @@ import type {
  * `InMemoryDatabase` is the development implementation, `SqliteDatabase` the
  * reference SQL one. See `src/storage/conformance.ts` to verify your own.
  */
-export interface ProductStore {
-  get(id: string): Promise<Product | null>;
+export interface SkuStore {
+  get(id: string): Promise<Sku | null>;
   /** Batched read; may return fewer rows than ids, in any order. */
-  getMany(ids: string[]): Promise<Product[]>;
-  list(query?: ProductQuery): Promise<Product[]>;
+  getMany(ids: string[]): Promise<Sku[]>;
+  list(query?: SkuQuery): Promise<Sku[]>;
   /** Insert or replace. `active` is normalized to a boolean on write. */
-  save(product: Product): Promise<Product>;
+  save(sku: Sku): Promise<Sku>;
   delete(id: string): Promise<void>;
   /**
    * Atomically decrement stock for every item, or change nothing at all.
    * Returns the items that could not be satisfied — an empty array means the
-   * whole reservation succeeded. Products with `stock: undefined` are
-   * unlimited and always succeed.
+   * whole reservation succeeded. SKUs with `stock: undefined` are unlimited and
+   * always succeed. Repeated SKU ids must consume their sum (see
+   * `aggregateStock`), or the adapter oversells.
    */
   reserveStock(items: StockChange[]): Promise<StockShortage[]>;
-  /** Give reserved stock back. Must be safe to call for unlimited products. */
+  /** Give reserved stock back. Must be safe to call for unlimited SKUs. */
   releaseStock(items: StockChange[]): Promise<void>;
 }
 
-export type ProductQuery = {
-  kind?: Product["kind"];
+export type SkuQuery = {
+  kind?: Sku["kind"];
   active?: boolean;
+  /** All SKUs of one product — the variants of a T-shirt, say. */
+  productId?: string;
   limit?: number;
   offset?: number;
 };
 
 export type StockChange = {
-  productId: string;
+  skuId: string;
   quantity: number;
 };
 
 export type StockShortage = {
-  productId: string;
+  skuId: string;
   requested: number;
-  /** `null` when the product row does not exist. */
+  /** `null` when the SKU row does not exist. */
   available: number | null;
 };
 
@@ -91,7 +94,7 @@ export type OrderQuery = {
 };
 
 export type Stores = {
-  products: ProductStore;
+  skus: SkuStore;
   orders: OrderStore;
 };
 

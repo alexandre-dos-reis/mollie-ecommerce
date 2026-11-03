@@ -11,7 +11,7 @@ import {
   type OrderQuery,
   type PaymentGateway,
   type PaymentSnapshot,
-  type ProductStore,
+  type SkuStore,
   type StockChange,
   type Stores,
 } from "./ports.ts";
@@ -23,8 +23,8 @@ import {
   type Order,
   type OrderLine,
   type PaymentState,
-  type Product,
   type Refund,
+  type Sku,
 } from "./types.ts";
 
 /* ---------------------------------------------------------------- options */
@@ -59,7 +59,7 @@ export type CommerceOptions = {
    */
   autoDeliverDigital?: boolean;
   /**
-   * Decrement stock at checkout and give it back if the payment dies.
+   * Decrement SKU stock at checkout and give it back if the payment dies.
    * Default `true`. Set `false` if you track stock elsewhere.
    */
   reserveStock?: boolean;
@@ -72,8 +72,9 @@ export type CommerceOptions = {
 /* ----------------------------------------------------------------- inputs */
 
 export type CartItem = {
-  productId: string;
-  /** Defaults to 1. Repeated products are merged into one line. */
+  /** The SKU being bought — one purchasable variant. */
+  skuId: string;
+  /** Defaults to 1. Repeated SKUs are merged into one line. */
   quantity?: number;
 };
 
@@ -118,7 +119,7 @@ export type RefundInput = {
    * Refund by order line instead of by amount. Quantity defaults to the whole
    * line. Only the money is affected — stock is not restored.
    */
-  lines?: { productId: string; quantity?: number }[];
+  lines?: { skuId: string; quantity?: number }[];
   /** Forwarded to Mollie as the refund description, and stored on the order. */
   reason?: string;
   /** Prevents a retried request from refunding twice. */
@@ -191,7 +192,7 @@ export function createCommerce(options: CommerceOptions) {
 
   function stockChanges(order: Order): StockChange[] {
     return order.lines.map((line) => ({
-      productId: line.productId,
+      skuId: line.skuId,
       quantity: line.quantity,
     }));
   }
@@ -199,7 +200,7 @@ export function createCommerce(options: CommerceOptions) {
   /** Give stock back exactly once, whoever triggers it. */
   async function releaseReservation(stores: Stores, order: Order): Promise<void> {
     if (!order.stockReserved) return;
-    await stores.products.releaseStock(stockChanges(order));
+    await stores.skus.releaseStock(stockChanges(order));
     order.stockReserved = false;
   }
 
@@ -228,7 +229,7 @@ export function createCommerce(options: CommerceOptions) {
     return order;
   }
 
-  async function priceCart(products: ProductStore, items: CartItem[]): Promise<OrderLine[]> {
+  async function priceCart(skus: SkuStore, items: CartItem[]): Promise<OrderLine[]> {
     if (items.length === 0) {
       throw new CommerceError("empty_cart", "checkout needs at least one item");
     }
@@ -239,25 +240,23 @@ export function createCommerce(options: CommerceOptions) {
       if (!Number.isInteger(quantity) || quantity < 1) {
         throw new CommerceError("empty_cart", `invalid quantity ${quantity}`, { item });
       }
-      quantities.set(item.productId, (quantities.get(item.productId) ?? 0) + quantity);
+      quantities.set(item.skuId, (quantities.get(item.skuId) ?? 0) + quantity);
     }
 
     // One batched read, so a big cart stays a single round trip.
-    const found = await products.getMany([...quantities.keys()]);
-    const byId = new Map(found.map((product) => [product.id, product]));
+    const found = await skus.getMany([...quantities.keys()]);
+    const byId = new Map(found.map((sku) => [sku.id, sku]));
 
     const lines: OrderLine[] = [];
-    for (const [productId, quantity] of quantities) {
-      const product = byId.get(productId);
-      if (!product) {
-        throw new CommerceError("product_not_found", `no product ${productId}`, { productId });
+    for (const [skuId, quantity] of quantities) {
+      const sku = byId.get(skuId);
+      if (!sku) {
+        throw new CommerceError("sku_not_found", `no sku ${skuId}`, { skuId });
       }
-      if (product.active === false) {
-        throw new CommerceError("product_inactive", `product ${product.id} is inactive`, {
-          productId: product.id,
-        });
+      if (sku.active === false) {
+        throw new CommerceError("sku_inactive", `sku ${sku.id} is inactive`, { skuId: sku.id });
       }
-      lines.push(lineFromProduct(product, quantity));
+      lines.push(lineFromSku(sku, quantity));
     }
 
     const currency = lines[0]!.unitPrice.currency;
@@ -265,7 +264,7 @@ export function createCommerce(options: CommerceOptions) {
     if (mixed) {
       throw new CommerceError(
         "currency_mismatch",
-        "all products in an order must share one currency",
+        "every SKU in an order must share one currency",
         { expected: currency, found: mixed.unitPrice.currency },
       );
     }
@@ -286,17 +285,17 @@ export function createCommerce(options: CommerceOptions) {
     // Phase 1: price the cart, hold the stock, persist the order. One
     // transaction, no network inside it.
     const draft = await db.transaction(async (stores) => {
-      const lines = await priceCart(stores.products, input.items);
+      const lines = await priceCart(stores.skus, input.items);
       const total = sum(lines.map((line) => line.total));
 
       let reserved = false;
       if (shouldReserveStock) {
-        const shortages = await stores.products.reserveStock(
-          lines.map((line) => ({ productId: line.productId, quantity: line.quantity })),
+        const shortages = await stores.skus.reserveStock(
+          lines.map((line) => ({ skuId: line.skuId, quantity: line.quantity })),
         );
         if (shortages.length > 0) {
           const first = shortages[0]!;
-          throw new CommerceError("out_of_stock", `product ${first.productId} is out of stock`, {
+          throw new CommerceError("out_of_stock", `sku ${first.skuId} is out of stock`, {
             shortages,
           });
         }
@@ -490,7 +489,7 @@ export function createCommerce(options: CommerceOptions) {
       const order = await mustGetOrder(stores, input.orderId);
       assertTransition(order.delivery.state, "returned");
       order.delivery.state = "returned";
-      if (input.restock) await stores.products.releaseStock(stockChanges(order));
+      if (input.restock) await stores.skus.releaseStock(stockChanges(order));
       return save(stores, order);
     });
   }
@@ -531,7 +530,7 @@ export function createCommerce(options: CommerceOptions) {
      * failure leaves a `failed` order rather than a lost cart — and its stock
      * reservation is released.
      *
-     * @param input.items Cart items; `[{ productId, quantity? }]`, quantity defaults to 1.
+     * @param input.items Cart items; `[{ skuId, quantity? }]`, quantity defaults to 1.
      * @param input.customer Optional `{ email?, locale? }`.
      * @param input.description Payment description; defaults to a generated summary.
      * @param input.redirectUrl Overrides the configured redirect URL.
@@ -540,8 +539,8 @@ export function createCommerce(options: CommerceOptions) {
      * @param input.idempotencyKey Replaying this key returns the first order instead of charging again.
      * @returns `{ order, checkoutUrl, replayed }`.
      * @throws `empty_cart` no items, or a quantity below 1.
-     * @throws `product_not_found` an item references an unknown product.
-     * @throws `product_inactive` a product has `active: false`.
+     * @throws `sku_not_found` an item references an unknown SKU.
+     * @throws `sku_inactive` a SKU has `active: false`.
      * @throws `out_of_stock` insufficient stock; nothing is reserved.
      * @throws `currency_mismatch` the cart mixes currencies.
      */
@@ -580,7 +579,7 @@ export function createCommerce(options: CommerceOptions) {
      *
      * @param input.orderId The order to refund.
      * @param input.amount Exact amount; mutually exclusive with `lines`.
-     * @param input.lines Lines to refund; quantity defaults to the whole line.
+     * @param input.lines Lines to refund as `[{ skuId, quantity? }]`; quantity defaults to the whole line.
      * @param input.reason Refund description, forwarded to Mollie.
      * @param input.idempotencyKey Prevents a retry from refunding twice.
      * @returns `{ order, refund }`.
@@ -662,8 +661,8 @@ export function createCommerce(options: CommerceOptions) {
     findOrders: (query?: OrderQuery) => db.orders.find(query),
 
     /**
-     * The database you passed in. Use it for catalog writes
-     * (`db.products.save`), reads, and your own queries.
+     * The database you passed in. Use it for catalog writes (`db.skus.save`),
+     * reads, and your own queries.
      */
     db,
   };
@@ -676,15 +675,16 @@ const DEAD_PAYMENT_STATES: readonly PaymentState[] = ["canceled", "expired", "fa
 
 /* ---------------------------------------------------------------- helpers */
 
-/** Freezes a catalog product into an order line at the given quantity. */
-export function lineFromProduct(product: Product, quantity: number): OrderLine {
+/** Freezes a catalog SKU into an order line at the given quantity. */
+export function lineFromSku(sku: Sku, quantity: number): OrderLine {
   return {
-    productId: product.id,
-    name: product.name,
-    kind: product.kind,
+    skuId: sku.id,
+    name: sku.name,
+    kind: sku.kind,
     quantity,
-    unitPrice: product.price,
-    total: multiply(product.price, quantity),
+    unitPrice: sku.price,
+    total: multiply(sku.price, quantity),
+    productId: sku.productId,
   };
 }
 
@@ -699,22 +699,22 @@ export function describeOrder(order: Order): string {
 
 function amountForLines(
   order: Order,
-  lines: { productId: string; quantity?: number }[],
+  lines: { skuId: string; quantity?: number }[],
 ): Money {
   const amounts = lines.map((wanted) => {
-    const line = order.lines.find((candidate) => candidate.productId === wanted.productId);
+    const line = order.lines.find((candidate) => candidate.skuId === wanted.skuId);
     if (!line) {
-      throw new CommerceError("product_not_found", `order has no line for ${wanted.productId}`, {
+      throw new CommerceError("sku_not_found", `order has no line for ${wanted.skuId}`, {
         orderId: order.id,
-        productId: wanted.productId,
+        skuId: wanted.skuId,
       });
     }
     const quantity = wanted.quantity ?? line.quantity;
     if (quantity > line.quantity) {
       throw new CommerceError(
         "refund_too_large",
-        `order has ${line.quantity}× ${wanted.productId}, cannot refund ${quantity}`,
-        { orderId: order.id, productId: wanted.productId },
+        `order has ${line.quantity}× ${wanted.skuId}, cannot refund ${quantity}`,
+        { orderId: order.id, skuId: wanted.skuId },
       );
     }
     return multiply(line.unitPrice, quantity);

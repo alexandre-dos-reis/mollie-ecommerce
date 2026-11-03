@@ -3,21 +3,21 @@ import type {
   Database,
   OrderQuery,
   OrderStore,
-  ProductQuery,
-  ProductStore,
+  SkuQuery,
+  SkuStore,
   StockChange,
   StockShortage,
   Stores,
 } from "../ports.ts";
-import type { Order, Product } from "../types.ts";
+import type { Order, Sku } from "../types.ts";
 import {
   orderToRow,
-  productToRow,
+  skuToRow,
   rowToOrder,
-  rowToProduct,
+  rowToSku,
   SCHEMA_SQL,
   type OrderRow,
-  type ProductRow,
+  type SkuRow,
 } from "./rows.ts";
 import { aggregateStock } from "./stock.ts";
 
@@ -56,47 +56,48 @@ export interface PostgresPool extends Queryable {
 
 /* --------------------------------------------------------------- products */
 
-export class PostgresProductStore implements ProductStore {
+export class PostgresSkuStore implements SkuStore {
   constructor(private readonly db: Queryable) {}
 
-  async get(id: string): Promise<Product | null> {
-    const { rows } = await this.db.query<ProductRow>("SELECT * FROM products WHERE id = $1", [id]);
-    return rows[0] ? rowToProduct(rows[0]) : null;
+  async get(id: string): Promise<Sku | null> {
+    const { rows } = await this.db.query<SkuRow>("SELECT * FROM skus WHERE id = $1", [id]);
+    return rows[0] ? rowToSku(rows[0]) : null;
   }
 
-  async getMany(ids: string[]): Promise<Product[]> {
+  async getMany(ids: string[]): Promise<Sku[]> {
     if (ids.length === 0) return [];
     // One array parameter instead of a generated placeholder list.
-    const { rows } = await this.db.query<ProductRow>(
-      "SELECT * FROM products WHERE id = ANY($1::text[])",
+    const { rows } = await this.db.query<SkuRow>(
+      "SELECT * FROM skus WHERE id = ANY($1::text[])",
       [ids],
     );
-    return rows.map(rowToProduct);
+    return rows.map(rowToSku);
   }
 
-  async list(query: ProductQuery = {}): Promise<Product[]> {
+  async list(query: SkuQuery = {}): Promise<Sku[]> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (query.kind !== undefined) where.push(`kind = $${params.push(query.kind)}`);
     if (query.active !== undefined) where.push(`active = $${params.push(query.active ? 1 : 0)}`);
+    if (query.productId !== undefined) where.push(`product_id = $${params.push(query.productId)}`);
 
     const sql = [
-      "SELECT * FROM products",
+      "SELECT * FROM skus",
       where.length ? `WHERE ${where.join(" AND ")}` : "",
       "ORDER BY id",
       limitOffset(query, params),
     ]
       .filter(Boolean)
       .join(" ");
-    const { rows } = await this.db.query<ProductRow>(sql, params);
-    return rows.map(rowToProduct);
+    const { rows } = await this.db.query<SkuRow>(sql, params);
+    return rows.map(rowToSku);
   }
 
-  async save(product: Product): Promise<Product> {
-    const row = productToRow(product);
+  async save(sku: Sku): Promise<Sku> {
+    const row = skuToRow(sku);
     const columns = Object.keys(row);
     await this.db.query(
-      `INSERT INTO products (${columns.join(", ")})
+      `INSERT INTO skus (${columns.join(", ")})
        VALUES (${columns.map((_, index) => `$${index + 1}`).join(", ")})
        ON CONFLICT (id) DO UPDATE SET
          ${columns
@@ -105,11 +106,11 @@ export class PostgresProductStore implements ProductStore {
            .join(", ")}`,
       Object.values(row),
     );
-    return rowToProduct(row);
+    return rowToSku(row);
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.query("DELETE FROM products WHERE id = $1", [id]);
+    await this.db.query("DELETE FROM skus WHERE id = $1", [id]);
   }
 
   /**
@@ -123,36 +124,36 @@ export class PostgresProductStore implements ProductStore {
     const wanted = aggregateStock(items);
 
     const { rows } = await this.db.query<{
-      product_id: string;
+      sku_id: string;
       quantity: number;
       stock: number | null;
       missing: boolean;
     }>(
       `WITH wanted AS (
-         SELECT product_id, quantity
-         FROM unnest($1::text[], $2::int[]) AS t(product_id, quantity)
+         SELECT sku_id, quantity
+         FROM unnest($1::text[], $2::int[]) AS t(sku_id, quantity)
        ),
        shortage AS (
-         SELECT w.product_id, w.quantity, p.stock, p.id IS NULL AS missing
+         SELECT w.sku_id, w.quantity, s.stock, s.id IS NULL AS missing
          FROM wanted w
-         LEFT JOIN products p ON p.id = w.product_id
-         WHERE p.id IS NULL OR (p.stock IS NOT NULL AND p.stock < w.quantity)
+         LEFT JOIN skus s ON s.id = w.sku_id
+         WHERE s.id IS NULL OR (s.stock IS NOT NULL AND s.stock < w.quantity)
        ),
        reserved AS (
-         UPDATE products p
-         SET stock = p.stock - w.quantity
+         UPDATE skus s
+         SET stock = s.stock - w.quantity
          FROM wanted w
-         WHERE p.id = w.product_id
-           AND p.stock IS NOT NULL
+         WHERE s.id = w.sku_id
+           AND s.stock IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM shortage)
-         RETURNING p.id
+         RETURNING s.id
        )
-       SELECT product_id, quantity, stock, missing FROM shortage ORDER BY product_id`,
-      [wanted.map((item) => item.productId), wanted.map((item) => item.quantity)],
+       SELECT sku_id, quantity, stock, missing FROM shortage ORDER BY sku_id`,
+      [wanted.map((item) => item.skuId), wanted.map((item) => item.quantity)],
     );
 
     return rows.map((row) => ({
-      productId: row.product_id,
+      skuId: row.sku_id,
       requested: row.quantity,
       available: row.missing ? null : row.stock,
     }));
@@ -162,11 +163,11 @@ export class PostgresProductStore implements ProductStore {
     if (items.length === 0) return;
     const wanted = aggregateStock(items);
     await this.db.query(
-      `UPDATE products p
-       SET stock = p.stock + w.quantity
-       FROM unnest($1::text[], $2::int[]) AS w(product_id, quantity)
-       WHERE p.id = w.product_id AND p.stock IS NOT NULL`,
-      [wanted.map((item) => item.productId), wanted.map((item) => item.quantity)],
+      `UPDATE skus s
+       SET stock = s.stock + w.quantity
+       FROM unnest($1::text[], $2::int[]) AS w(sku_id, quantity)
+       WHERE s.id = w.sku_id AND s.stock IS NOT NULL`,
+      [wanted.map((item) => item.skuId), wanted.map((item) => item.quantity)],
     );
   }
 }
@@ -293,7 +294,7 @@ export function createPostgresDatabase(pool: PostgresPool): Database {
   let active: Stores | undefined;
 
   return {
-    products: new PostgresProductStore(pool),
+    skus: new PostgresSkuStore(pool),
     orders: new PostgresOrderStore(pool),
 
     async transaction<T>(run: (stores: Stores) => Promise<T>): Promise<T> {
@@ -306,7 +307,7 @@ export function createPostgresDatabase(pool: PostgresPool): Database {
       try {
         await client.query("BEGIN");
         active = {
-          products: new PostgresProductStore(client),
+          skus: new PostgresSkuStore(client),
           orders: new PostgresOrderStore(client),
         };
         try {

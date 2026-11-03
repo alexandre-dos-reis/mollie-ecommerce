@@ -7,9 +7,9 @@ import type { Database } from "./ports.ts";
 import { InMemoryDatabase } from "./storage/memory.ts";
 import { SqliteDatabase } from "./storage/sqlite.ts";
 import { createPglitePostgres } from "../test/pglite-pool.ts";
-import type { Product } from "./types.ts";
+import type { Sku } from "./types.ts";
 
-const mug: Product = {
+const mug: Sku = {
   id: "mug",
   name: "Enamel mug",
   kind: "physical",
@@ -17,7 +17,7 @@ const mug: Product = {
   stock: 10,
 };
 
-const ebook: Product = {
+const ebook: Sku = {
   id: "ebook",
   name: "The Mollie Handbook",
   kind: "digital",
@@ -55,8 +55,8 @@ for (const [name, makeDb] of Object.entries(databases)) {
     beforeEach(async () => {
       gateway = new FakePaymentGateway();
       db = await makeDb();
-      await db.products.save(mug);
-      await db.products.save(ebook);
+      await db.skus.save(mug);
+      await db.skus.save(ebook);
       commerce = createCommerce({
         gateway,
         db,
@@ -67,7 +67,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
 
     test("checkout prices the cart and returns a checkout url", async () => {
       const { order, checkoutUrl, replayed } = await commerce.checkout({
-        items: [{ productId: "mug", quantity: 2 }, { productId: "ebook" }],
+        items: [{ skuId: "mug", quantity: 2 }, { skuId: "ebook" }],
       });
 
       expect(order.total).toEqual(money(3400, "EUR"));
@@ -81,27 +81,73 @@ for (const [name, makeDb] of Object.entries(databases)) {
 
     test("checkout merges duplicate cart lines", async () => {
       const { order } = await commerce.checkout({
-        items: [{ productId: "mug" }, { productId: "mug", quantity: 2 }],
+        items: [{ skuId: "mug" }, { skuId: "mug", quantity: 2 }],
       });
       expect(order.lines).toHaveLength(1);
       expect(order.lines[0]!.quantity).toBe(3);
       expect(order.total).toEqual(money(3750, "EUR"));
     });
 
-    test("checkout rejects unknown products, empty carts and mixed currencies", async () => {
-      await expect(commerce.checkout({ items: [] })).rejects.toThrow(CommerceError);
-      await expect(commerce.checkout({ items: [{ productId: "nope" }] })).rejects.toThrow(
-        /no product nope/,
-      );
-      await db.products.save({ ...ebook, id: "usd", price: money(900, "USD") });
+    test("variants of one product are independent", async () => {
+      // Two SKUs of the same product: overselling one must not touch its
+      // sibling, and the order line keeps the grouping key.
+      await db.skus.save({
+        id: "tshirt-red-m",
+        name: "T-shirt — Red / M",
+        kind: "physical",
+        price: money(1999, "EUR"),
+        stock: 5,
+        productId: "tshirt",
+      });
+      await db.skus.save({
+        id: "tshirt-blue-l",
+        name: "T-shirt — Blue / L",
+        kind: "physical",
+        price: money(2199, "EUR"),
+        stock: 1,
+        productId: "tshirt",
+      });
+
+      const { order } = await commerce.checkout({
+        items: [{ skuId: "tshirt-red-m", quantity: 2 }],
+      });
+      expect(order.total).toEqual(money(3998, "EUR"));
+      expect(order.lines[0]!.skuId).toBe("tshirt-red-m");
+      expect(order.lines[0]!.productId).toBe("tshirt");
+      expect((await db.skus.get("tshirt-red-m"))?.stock).toBe(3);
+      expect((await db.skus.get("tshirt-blue-l"))?.stock).toBe(1);
+
       await expect(
-        commerce.checkout({ items: [{ productId: "mug" }, { productId: "usd" }] }),
+        commerce.checkout({ items: [{ skuId: "tshirt-blue-l", quantity: 2 }] }),
+      ).rejects.toThrow(/sku tshirt-blue-l is out of stock/);
+      expect((await db.skus.get("tshirt-red-m"))?.stock).toBe(3);
+      expect((await db.skus.get("tshirt-blue-l"))?.stock).toBe(1);
+
+      // The same cart can mix variants, each priced on its own.
+      const mixed = await commerce.checkout({
+        items: [{ skuId: "tshirt-red-m" }, { skuId: "tshirt-blue-l" }],
+      });
+      expect(mixed.order.total).toEqual(money(4198, "EUR"));
+      expect((await commerce.db.skus.list({ productId: "tshirt" })).map((row) => row.id)).toEqual([
+        "tshirt-blue-l",
+        "tshirt-red-m",
+      ]);
+    });
+
+    test("checkout rejects unknown skus, empty carts and mixed currencies", async () => {
+      await expect(commerce.checkout({ items: [] })).rejects.toThrow(CommerceError);
+      await expect(commerce.checkout({ items: [{ skuId: "nope" }] })).rejects.toThrow(
+        /no sku nope/,
+      );
+      await db.skus.save({ ...ebook, id: "usd", price: money(900, "USD") });
+      await expect(
+        commerce.checkout({ items: [{ skuId: "mug" }, { skuId: "usd" }] }),
       ).rejects.toThrow(/one currency/);
     });
 
     test("checkout reserves stock, and releases it when the payment dies", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug", quantity: 3 }] });
-      expect((await db.products.get("mug"))?.stock).toBe(7);
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug", quantity: 3 }] });
+      expect((await db.skus.get("mug"))?.stock).toBe(7);
       expect(order.stockReserved).toBe(true);
 
       gateway.setState(order.payment.id!, "expired");
@@ -109,36 +155,36 @@ for (const [name, makeDb] of Object.entries(databases)) {
       expect(expired.payment.state).toBe("expired");
       expect(expired.delivery.state).toBe("canceled");
       expect(expired.stockReserved).toBe(false);
-      expect((await db.products.get("mug"))?.stock).toBe(10);
+      expect((await db.skus.get("mug"))?.stock).toBe(10);
 
       // Syncing again must not hand stock back twice.
       await commerce.syncOrder(order.id);
-      expect((await db.products.get("mug"))?.stock).toBe(10);
+      expect((await db.skus.get("mug"))?.stock).toBe(10);
     });
 
     test("checkout refuses to oversell and leaves no partial reservation", async () => {
-      await db.products.save({ ...mug, stock: 2 });
+      await db.skus.save({ ...mug, stock: 2 });
       await expect(
-        commerce.checkout({ items: [{ productId: "ebook" }, { productId: "mug", quantity: 3 }] }),
+        commerce.checkout({ items: [{ skuId: "ebook" }, { skuId: "mug", quantity: 3 }] }),
       ).rejects.toThrow(/out of stock/);
-      expect((await db.products.get("mug"))?.stock).toBe(2);
+      expect((await db.skus.get("mug"))?.stock).toBe(2);
       expect(await db.orders.find()).toEqual([]);
     });
 
     test("checkout honors the active flag", async () => {
-      await db.products.save({ ...ebook, active: false });
-      await expect(commerce.checkout({ items: [{ productId: "ebook" }] })).rejects.toThrow(
+      await db.skus.save({ ...ebook, active: false });
+      await expect(commerce.checkout({ items: [{ skuId: "ebook" }] })).rejects.toThrow(
         /inactive/,
       );
     });
 
     test("a repeated idempotency key replays the first order", async () => {
       const first = await commerce.checkout({
-        items: [{ productId: "mug" }],
+        items: [{ skuId: "mug" }],
         idempotencyKey: "key-1",
       });
       const second = await commerce.checkout({
-        items: [{ productId: "mug" }],
+        items: [{ skuId: "mug" }],
         idempotencyKey: "key-1",
       });
 
@@ -147,17 +193,17 @@ for (const [name, makeDb] of Object.entries(databases)) {
       expect(second.checkoutUrl).toBe(first.checkoutUrl!);
       expect(await db.orders.find()).toHaveLength(1);
       // Stock was taken once, not twice.
-      expect((await db.products.get("mug"))?.stock).toBe(9);
+      expect((await db.skus.get("mug"))?.stock).toBe(9);
       expect(gateway.payments.size).toBe(1);
     });
 
     test("a gateway failure rolls the reservation back", async () => {
       gateway.failNextCreate(new Error("mollie is down"));
-      await expect(commerce.checkout({ items: [{ productId: "mug", quantity: 2 }] })).rejects.toThrow(
+      await expect(commerce.checkout({ items: [{ skuId: "mug", quantity: 2 }] })).rejects.toThrow(
         /mollie is down/,
       );
 
-      expect((await db.products.get("mug"))?.stock).toBe(10);
+      expect((await db.skus.get("mug"))?.stock).toBe(10);
       const [order] = await db.orders.find();
       expect(order?.payment.state).toBe("failed");
       expect(order?.delivery.state).toBe("canceled");
@@ -165,7 +211,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
     });
 
     test("a paid physical order becomes ready, then ships", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       gateway.setState(order.payment.id!, "paid");
 
       const paid = await commerce.handleWebhook(order.payment.id!);
@@ -173,7 +219,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
       expect(paid?.delivery.state).toBe("ready");
       // Paid orders keep their stock: it has left the warehouse, not come back.
       expect(paid?.stockReserved).toBe(true);
-      expect((await db.products.get("mug"))?.stock).toBe(9);
+      expect((await db.skus.get("mug"))?.stock).toBe(9);
 
       const shipped = await commerce.markShipped({
         orderId: order.id,
@@ -189,42 +235,42 @@ for (const [name, makeDb] of Object.entries(databases)) {
     });
 
     test("a paid digital-only order is delivered automatically", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "ebook" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "ebook" }] });
       gateway.setState(order.payment.id!, "paid");
       const synced = await commerce.syncOrder(order.id);
       expect(synced.delivery.state).toBe("delivered");
     });
 
     test("invalid delivery transitions are refused", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       await expect(commerce.markDelivered(order.id)).rejects.toThrow(
         /cannot move delivery from "not_started" to "delivered"/,
       );
     });
 
     test("a return can restock without moving money", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug", quantity: 2 }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug", quantity: 2 }] });
       gateway.setState(order.payment.id!, "paid");
       await commerce.syncOrder(order.id);
       await commerce.markShipped({ orderId: order.id });
-      expect((await db.products.get("mug"))?.stock).toBe(8);
+      expect((await db.skus.get("mug"))?.stock).toBe(8);
 
       const returned = await commerce.markReturned({ orderId: order.id, restock: true });
       expect(returned.delivery.state).toBe("returned");
       expect(returned.payment.state).toBe("paid");
-      expect((await db.products.get("mug"))?.stock).toBe(10);
+      expect((await db.skus.get("mug"))?.stock).toBe(10);
     });
 
     test("partial line refund then full refund", async () => {
       const { order } = await commerce.checkout({
-        items: [{ productId: "mug", quantity: 2 }, { productId: "ebook" }],
+        items: [{ skuId: "mug", quantity: 2 }, { skuId: "ebook" }],
       });
       gateway.setState(order.payment.id!, "paid");
       await commerce.syncOrder(order.id);
 
       const first = await commerce.refund({
         orderId: order.id,
-        lines: [{ productId: "mug", quantity: 1 }],
+        lines: [{ skuId: "mug", quantity: 1 }],
         reason: "damaged in transit",
       });
       expect(first.refund.amount).toEqual(money(1250, "EUR"));
@@ -238,7 +284,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
     });
 
     test("refunds are bounded by what is left", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       await expect(commerce.refund({ orderId: order.id })).rejects.toThrow(/not paid/);
 
       gateway.setState(order.payment.id!, "paid");
@@ -247,25 +293,25 @@ for (const [name, makeDb] of Object.entries(databases)) {
         commerce.refund({ orderId: order.id, amount: money(2000, "EUR") }),
       ).rejects.toThrow(/at most/);
       await expect(
-        commerce.refund({ orderId: order.id, lines: [{ productId: "mug", quantity: 5 }] }),
+        commerce.refund({ orderId: order.id, lines: [{ skuId: "mug", quantity: 5 }] }),
       ).rejects.toThrow(/cannot refund 5/);
     });
 
     test("cancelling an unpaid order cancels the payment and frees stock", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       const canceled = await commerce.cancelOrder(order.id);
       expect(canceled.payment.state).toBe("canceled");
       expect(canceled.delivery.state).toBe("canceled");
-      expect((await db.products.get("mug"))?.stock).toBe(10);
+      expect((await db.skus.get("mug"))?.stock).toBe(10);
 
-      const paid = (await commerce.checkout({ items: [{ productId: "mug" }] })).order;
+      const paid = (await commerce.checkout({ items: [{ skuId: "mug" }] })).order;
       gateway.setState(paid.payment.id!, "paid");
       await commerce.syncOrder(paid.id);
       await expect(commerce.cancelOrder(paid.id)).rejects.toThrow(/refund it instead/);
     });
 
     test("a stale write loses to the one that got there first", async () => {
-      const { order } = await commerce.checkout({ items: [{ productId: "mug" }] });
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       const stale = await db.orders.get(order.id);
       await commerce.cancelOrder(order.id);
 
@@ -273,8 +319,8 @@ for (const [name, makeDb] of Object.entries(databases)) {
     });
 
     test("orders are queryable by state", async () => {
-      const paid = (await commerce.checkout({ items: [{ productId: "mug" }] })).order;
-      await commerce.checkout({ items: [{ productId: "mug" }] });
+      const paid = (await commerce.checkout({ items: [{ skuId: "mug" }] })).order;
+      await commerce.checkout({ items: [{ skuId: "mug" }] });
       gateway.setState(paid.payment.id!, "paid");
       await commerce.syncOrder(paid.id);
 

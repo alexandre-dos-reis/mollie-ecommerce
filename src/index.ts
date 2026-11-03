@@ -12,7 +12,7 @@ export type { MollieGatewayOptions } from "./mollie.ts";
 export {
   InMemoryDatabase,
   InMemoryOrderStore,
-  InMemoryProductStore,
+  InMemorySkuStore,
 } from "./storage/memory.ts";
 // The SQL adapters are NOT re-exported here, so the core pulls in nothing.
 // Import them from `mollie-ecommerce/storage/sqlite` (which needs
@@ -21,10 +21,10 @@ export {
 export { aggregateStock } from "./storage/stock.ts";
 export {
   orderToRow,
-  productToRow,
+  skuToRow,
   rowToOrder,
-  rowToProduct,
+  rowToSku,
   SCHEMA_SQL,
   type OrderRow,
-  type ProductRow,
+  type SkuRow,
 } from "./storage/rows.ts";

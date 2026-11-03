@@ -1,5 +1,5 @@
 import { money } from "../money.ts";
-import type { Order, OrderLine, Product, Refund } from "../types.ts";
+import type { Order, OrderLine, Refund, Sku } from "../types.ts";
 
 /**
  * Flat row shapes for the two entities, plus mappers. Nothing here knows about
@@ -10,7 +10,7 @@ import type { Order, OrderLine, Product, Refund } from "../types.ts";
  * floats. Lines and refunds are JSON columns; if you need to query inside
  * them, promote them to child tables and keep these mappers for the parent.
  */
-export type ProductRow = {
+export type SkuRow = {
   id: string;
   name: string;
   kind: string;
@@ -19,6 +19,8 @@ export type ProductRow = {
   /** `null` means unlimited. */
   stock: number | null;
   active: number;
+  /** Optional grouping key; the library never interprets it. */
+  product_id: string | null;
 };
 
 export type OrderRow = {
@@ -43,28 +45,30 @@ export type OrderRow = {
   updated_at: string;
 };
 
-/* --------------------------------------------------------------- products */
+/* ------------------------------------------------------------------- skus */
 
-export function productToRow(product: Product): ProductRow {
+export function skuToRow(sku: Sku): SkuRow {
   return {
-    id: product.id,
-    name: product.name,
-    kind: product.kind,
-    price_cents: product.price.cents,
-    currency: product.price.currency,
-    stock: product.stock ?? null,
-    active: product.active === false ? 0 : 1,
+    id: sku.id,
+    name: sku.name,
+    kind: sku.kind,
+    price_cents: sku.price.cents,
+    currency: sku.price.currency,
+    stock: sku.stock ?? null,
+    active: sku.active === false ? 0 : 1,
+    product_id: sku.productId ?? null,
   };
 }
 
-export function rowToProduct(row: ProductRow): Product {
+export function rowToSku(row: SkuRow): Sku {
   return {
     id: row.id,
     name: row.name,
-    kind: row.kind as Product["kind"],
+    kind: row.kind as Sku["kind"],
     price: money(row.price_cents, row.currency),
     stock: row.stock ?? undefined,
     active: row.active !== 0,
+    productId: row.product_id ?? undefined,
   };
 }
 
@@ -134,15 +138,18 @@ export function rowToOrder(row: OrderRow): Order {
  * shapes above. The indexes are the ones this library's lookups need.
  */
 export const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE IF NOT EXISTS skus (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   kind        TEXT NOT NULL,
   price_cents INTEGER NOT NULL,
   currency    TEXT NOT NULL,
   stock       INTEGER,
-  active      INTEGER NOT NULL DEFAULT 1
+  active      INTEGER NOT NULL DEFAULT 1,
+  product_id  TEXT
 );
+
+CREATE INDEX IF NOT EXISTS skus_product_id ON skus (product_id);
 
 CREATE TABLE IF NOT EXISTS orders (
   id                    TEXT PRIMARY KEY,

@@ -1,7 +1,7 @@
 import type { StockChange } from "../ports.ts";
 
 /**
- * Collapses repeated product ids into one change each.
+ * Collapses repeated SKU ids into one change each.
  *
  * Every adapter must do this before touching stock: checking `[2, 2]` against
  * a stock of 3 passes twice if the lines are treated independently, and then
@@ -11,7 +11,7 @@ import type { StockChange } from "../ports.ts";
 export function aggregateStock(items: StockChange[]): StockChange[] {
   const totals = new Map<string, number>();
   for (const item of items) {
-    totals.set(item.productId, (totals.get(item.productId) ?? 0) + item.quantity);
+    totals.set(item.skuId, (totals.get(item.skuId) ?? 0) + item.quantity);
   }
-  return [...totals].map(([productId, quantity]) => ({ productId, quantity }));
+  return [...totals].map(([skuId, quantity]) => ({ skuId, quantity }));
 }

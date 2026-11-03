@@ -38,7 +38,7 @@ test("node-postgres satisfies the Postgres adapter's ports", () => {
   expect(typeof asPool.connect).toBe("function");
   expect(typeof asQueryable.query).toBe("function");
   expect(typeof db.transaction).toBe("function");
-  expect(db.products).toBeDefined();
+  expect(db.skus).toBeDefined();
   expect(db.orders).toBeDefined();
   expect(checkPoolClient).toBeInstanceOf(Function);
 });

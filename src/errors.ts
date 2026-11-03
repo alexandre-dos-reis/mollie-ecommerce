@@ -1,6 +1,6 @@
 export type CommerceErrorCode =
-  | "product_not_found"
-  | "product_inactive"
+  | "sku_not_found"
+  | "sku_inactive"
   | "out_of_stock"
   | "order_not_found"
   | "empty_cart"

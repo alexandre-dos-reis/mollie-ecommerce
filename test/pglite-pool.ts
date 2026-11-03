@@ -57,7 +57,7 @@ export async function createPglitePostgres(): Promise<PostgresTestDatabase> {
     db: createPostgresDatabase(pool),
     pool,
     reset: async () => {
-      await client.exec("TRUNCATE products, orders");
+      await client.exec("TRUNCATE skus, orders");
     },
     close: () => client.close(),
   };

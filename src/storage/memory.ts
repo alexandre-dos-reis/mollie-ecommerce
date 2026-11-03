@@ -3,13 +3,13 @@ import type {
   Database,
   OrderQuery,
   OrderStore,
-  ProductQuery,
-  ProductStore,
+  SkuQuery,
+  SkuStore,
   StockChange,
   StockShortage,
   Stores,
 } from "../ports.ts";
-import type { Order, Product } from "../types.ts";
+import type { Order, Sku } from "../types.ts";
 import { aggregateStock } from "./stock.ts";
 
 function clone<T>(value: T): T {
@@ -21,87 +21,85 @@ function matchesAny<T>(value: T, filter: T | T[] | undefined): boolean {
   return Array.isArray(filter) ? filter.includes(value) : filter === value;
 }
 
-export class InMemoryProductStore implements ProductStore {
-  constructor(private readonly products = new Map<string, Product>()) {}
+export class InMemorySkuStore implements SkuStore {
+  constructor(private readonly skus = new Map<string, Sku>()) {}
 
-  static seeded(seed: Product[]): InMemoryProductStore {
-    const store = new InMemoryProductStore();
-    for (const product of seed) store.products.set(product.id, clone(product));
+  static seeded(seed: Sku[]): InMemorySkuStore {
+    const store = new InMemorySkuStore();
+    for (const sku of seed) store.skus.set(sku.id, clone(sku));
     return store;
   }
 
-  async get(id: string): Promise<Product | null> {
-    const found = this.products.get(id);
+  async get(id: string): Promise<Sku | null> {
+    const found = this.skus.get(id);
     return found ? clone(found) : null;
   }
 
-  async getMany(ids: string[]): Promise<Product[]> {
+  async getMany(ids: string[]): Promise<Sku[]> {
     return ids
-      .map((id) => this.products.get(id))
-      .filter((product): product is Product => product !== undefined)
+      .map((id) => this.skus.get(id))
+      .filter((sku): sku is Sku => sku !== undefined)
       .map(clone);
   }
 
-  async list(query: ProductQuery = {}): Promise<Product[]> {
-    const all = [...this.products.values()]
-      .filter((product) => matchesAny(product.kind, query.kind))
-      .filter((product) => query.active === undefined || product.active !== false === query.active)
+  async list(query: SkuQuery = {}): Promise<Sku[]> {
+    const all = [...this.skus.values()]
+      .filter((sku) => matchesAny(sku.kind, query.kind))
+      .filter((sku) => query.active === undefined || sku.active !== false === query.active)
+      .filter((sku) => query.productId === undefined || sku.productId === query.productId)
+      .sort((a, b) => a.id.localeCompare(b.id))
       .map(clone);
     return page(all, query.limit, query.offset);
   }
 
-  async save(product: Product): Promise<Product> {
+  async save(sku: Sku): Promise<Sku> {
     // `active` is normalized on write, so every adapter reads back a boolean.
-    const stored = { ...clone(product), active: product.active !== false };
-    this.products.set(stored.id, stored);
+    const stored = { ...clone(sku), active: sku.active !== false };
+    this.skus.set(stored.id, stored);
     return clone(stored);
   }
 
   async delete(id: string): Promise<void> {
-    this.products.delete(id);
+    this.skus.delete(id);
   }
 
   async reserveStock(items: StockChange[]): Promise<StockShortage[]> {
     const wanted = aggregateStock(items);
     const shortages: StockShortage[] = [];
     for (const item of wanted) {
-      const product = this.products.get(item.productId);
-      if (!product) {
-        shortages.push({ productId: item.productId, requested: item.quantity, available: null });
-      } else if (product.stock !== undefined && product.stock < item.quantity) {
-        shortages.push({
-          productId: item.productId,
-          requested: item.quantity,
-          available: product.stock,
-        });
+      const sku = this.skus.get(item.skuId);
+      if (!sku) {
+        shortages.push({ skuId: item.skuId, requested: item.quantity, available: null });
+      } else if (sku.stock !== undefined && sku.stock < item.quantity) {
+        shortages.push({ skuId: item.skuId, requested: item.quantity, available: sku.stock });
       }
     }
     // All-or-nothing, like the SQL implementation's transaction.
     if (shortages.length > 0) return shortages;
 
     for (const item of wanted) {
-      const product = this.products.get(item.productId)!;
-      if (product.stock !== undefined) product.stock -= item.quantity;
+      const sku = this.skus.get(item.skuId)!;
+      if (sku.stock !== undefined) sku.stock -= item.quantity;
     }
     return [];
   }
 
   async releaseStock(items: StockChange[]): Promise<void> {
     for (const item of aggregateStock(items)) {
-      const product = this.products.get(item.productId);
-      if (product && product.stock !== undefined) product.stock += item.quantity;
+      const sku = this.skus.get(item.skuId);
+      if (sku && sku.stock !== undefined) sku.stock += item.quantity;
     }
   }
 
   /** @internal used by {@link InMemoryDatabase} to snapshot for rollback. */
-  snapshot(): Map<string, Product> {
-    return new Map([...this.products].map(([id, product]) => [id, clone(product)]));
+  snapshot(): Map<string, Sku> {
+    return new Map([...this.skus].map(([id, sku]) => [id, clone(sku)]));
   }
 
   /** @internal */
-  restore(snapshot: Map<string, Product>): void {
-    this.products.clear();
-    for (const [id, product] of snapshot) this.products.set(id, product);
+  restore(snapshot: Map<string, Sku>): void {
+    this.skus.clear();
+    for (const [id, sku] of snapshot) this.skus.set(id, sku);
   }
 }
 
@@ -185,25 +183,25 @@ export class InMemoryOrderStore implements OrderStore {
  * without pretending to be concurrent-safe across processes.
  */
 export class InMemoryDatabase implements Database {
-  readonly products: InMemoryProductStore;
+  readonly skus: InMemorySkuStore;
   readonly orders: InMemoryOrderStore;
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(seed: { products?: Product[] } = {}) {
-    this.products = InMemoryProductStore.seeded(seed.products ?? []);
+  constructor(seed: { skus?: Sku[] } = {}) {
+    this.skus = InMemorySkuStore.seeded(seed.skus ?? []);
     this.orders = new InMemoryOrderStore();
   }
 
   async transaction<T>(run: (stores: Stores) => Promise<T>): Promise<T> {
     const result = this.queue.then(async () => {
       const before = {
-        products: this.products.snapshot(),
+        skus: this.skus.snapshot(),
         orders: this.orders.snapshot(),
       };
       try {
-        return await run({ products: this.products, orders: this.orders });
+        return await run({ skus: this.skus, orders: this.orders });
       } catch (error) {
-        this.products.restore(before.products);
+        this.skus.restore(before.skus);
         this.orders.restore(before.orders);
         throw error;
       }

@@ -3,9 +3,9 @@
 [![CI](https://github.com/alexandre-dos-reis/mollie-ecommerce/actions/workflows/ci.yml/badge.svg)](https://github.com/alexandre-dos-reis/mollie-ecommerce/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Mollie has payments and refunds but no product model. This library adds the
-minimum an ecommerce flow needs on top: products, orders, and a delivery
-lifecycle — nothing else.
+Mollie has payments and refunds but no catalog. This library adds the minimum
+an ecommerce flow needs on top: SKUs, orders, and a delivery lifecycle —
+nothing else.
 
 It is a library, not a server: no HTTP layer, no framework, no database
 required. Call the methods from whatever you already run.
@@ -23,7 +23,7 @@ output for Node to consume.
 ```bash
 # Working on the library itself
 bun install
-bun run check     # typecheck + 112 tests
+bun run check     # typecheck + 115 tests
 bun run example   # the full lifecycle, no Mollie account needed
 ```
 
@@ -32,33 +32,35 @@ bun run example   # the full lifecycle, no Mollie account needed
 In scope: pricing a cart, creating and reconciling payments, refunds, stock
 reservation, and delivery state.
 
-Out of scope, by design: catalog concerns (images, SKUs, descriptions,
-categories, VAT breakdowns, translations) belong in your own catalog keyed by
-product `id`; HTTP routing and webhook transport belong in your application;
-and Mollie features unrelated to this lifecycle — subscriptions, payment links,
-settlements, Connect — are better reached through the Mollie SDK directly.
+Out of scope, by design: catalog structure (products, options, variant
+matrices, images, descriptions, categories, VAT breakdowns, translations)
+belongs in your own tables, linked by `Sku.productId`; HTTP routing and webhook
+transport belong in your application; and Mollie features unrelated to this
+lifecycle — subscriptions, payment links, settlements, Connect — are better
+reached through the Mollie SDK directly.
 
 ## Model
 
-Deliberately small. Anything else your shop shows — images, SKUs,
-descriptions, VAT breakdowns, translations — stays in your catalog, keyed by
-product `id`.
+Deliberately small. Two entities, and a hard boundary: your catalog keeps
+products, options, images, descriptions and translations — this library keeps
+what it needs to take money and ship goods.
 
 ```ts
-type Product = {
-  id: string;        // your identifier; order lines keep a copy forever
-  name: string;      // shown to the customer, used in the payment description
+type Sku = {
+  id: string;        // "tshirt-red-m" — order lines keep a copy forever
+  name: string;      // "T-shirt — Red / M", shown to the customer
   kind: "physical" | "digital" | "service";
-  price: Money;      // all products in one order share a currency
-  stock?: number;    // undefined = unlimited
+  price: Money;      // every SKU in one order shares a currency
+  stock?: number;    // undefined = unlimited, not tracked
   active?: boolean;  // false hides it from checkout; defaults true
+  productId?: string; // optional grouping key, indexed, never interpreted
 };
 
 type Order = {
   id: string;
   version: number;             // optimistic-lock counter
   idempotencyKey?: string;
-  lines: OrderLine[];          // frozen copies of the products at purchase time
+  lines: OrderLine[];          // frozen copies of the SKUs at purchase time
   total: Money;
   customer?: { email?: string; locale?: string };
   payment: {
@@ -77,6 +79,28 @@ type Order = {
 
 `Money` is integer minor units plus a currency (`money(1250, "EUR")`), never a
 float. Mollie's `"12.50"` strings are converted at the API boundary only.
+
+### Why SKUs, and where variants go
+
+A product has no single price or stock count — a *purchasable combination*
+does. "T-shirt" can't be reserved; "T-shirt / Red / M" can. So the sellable
+unit here is the SKU, and **variants need no modeling at all**: register one
+SKU per combination.
+
+```ts
+await db.skus.save({ id: "tshirt-red-m",  name: "T-shirt — Red / M", kind: "physical",
+                     price: money(1999, "EUR"), stock: 10, productId: "tshirt" });
+await db.skus.save({ id: "tshirt-blue-l", name: "T-shirt — Blue / L", kind: "physical",
+                     price: money(2199, "EUR"), stock: 2,  productId: "tshirt" });
+
+await db.skus.list({ productId: "tshirt" }); // both variants
+```
+
+Size and colour are your catalog's vocabulary; the library only ever sees
+`tshirt-red-m, €19.99, 10 left`. Variants price and stock independently —
+selling out Blue/L leaves Red/M alone. `kind` is per SKU too, so the same book
+can ship as a hardback and download as an ebook. A product without variants is
+simply one SKU.
 
 Payment state mirrors Mollie — `created`, `open`, `pending`, `authorized`,
 `paid`, `canceled`, `expired`, `failed` — plus `partially_refunded` and
@@ -104,7 +128,7 @@ const commerce = createCommerce({
   webhookUrl: "https://shop.example/mollie-webhook",
 });
 
-await commerce.db.products.save({
+await commerce.db.skus.save({
   id: "mug", name: "Enamel mug", kind: "physical", price: money(1250, "EUR"), stock: 10,
 });
 ```
@@ -114,12 +138,12 @@ await commerce.db.products.save({
 | Option | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `gateway` | yes | — | Payment provider. `createMollieGateway({ apiKey })`, or `new FakePaymentGateway()` in tests. |
-| `db` | yes | — | Storage. `InMemoryDatabase`, `SqliteDatabase`, or your own adapter. |
+| `db` | yes | — | Storage. `InMemoryDatabase`, `SqliteDatabase`, the Postgres stores, or your own adapter. |
 | `redirectUrl` | no | — | Where Mollie returns the customer after paying. Mollie requires it for most methods. |
 | `cancelUrl` | no | — | Where Mollie returns a customer who abandons the payment. |
 | `webhookUrl` | no | — | Public URL Mollie posts status changes to. Without it you must poll `syncOrder`. Cannot be `localhost`. |
 | `autoDeliverDigital` | no | `true` | Jump an order with no physical lines straight to `delivered` when paid. |
-| `reserveStock` | no | `true` | Decrement stock at checkout, give it back if the payment dies. |
+| `reserveStock` | no | `true` | Decrement SKU stock at checkout, give it back if the payment dies. |
 | `clock` | no | system | Override `now()`, e.g. to freeze timestamps in tests. |
 | `generateId` | no | random | Override id generation; receives a prefix such as `"ord"`. |
 
@@ -135,14 +159,14 @@ payment. Send the customer to `checkoutUrl`.
 
 | Argument | Meaning |
 | --- | --- |
-| `input.items` | `[{ productId, quantity? }]`, at least one. Quantity defaults to 1; repeated products are merged into one line. |
+| `input.items` | `[{ skuId, quantity? }]`, at least one. Quantity defaults to 1; repeated SKUs are merged into one line. |
 | `input.customer` | `{ email?, locale? }`. `locale` (e.g. `nl_NL`) localizes Mollie's payment screen. |
 | `input.description` | Payment description on the customer's statement. Defaults to a generated summary; Mollie truncates per method. |
 | `input.redirectUrl` / `input.cancelUrl` / `input.webhookUrl` | Override the configured URLs for this order. |
 | `input.idempotencyKey` | Replaying the same key returns the first order (`replayed: true`) instead of charging twice. Also sent to Mollie. |
 
-Throws `empty_cart`, `product_not_found`, `product_inactive`, `out_of_stock`
-(nothing is reserved), `currency_mismatch`.
+Throws `empty_cart`, `sku_not_found`, `sku_inactive`, `out_of_stock` (nothing
+is reserved), `currency_mismatch`.
 
 ### `syncOrder(orderId) → Order`
 
@@ -168,7 +192,7 @@ Refunds a paid order: in full, by amount, or by line. Moves money only — see
 | --- | --- |
 | `input.orderId` | Order to refund. |
 | `input.amount` | Exact `Money` to refund. Mutually exclusive with `lines`. |
-| `input.lines` | `[{ productId, quantity? }]`; quantity defaults to the whole line. |
+| `input.lines` | `[{ skuId, quantity? }]`; quantity defaults to the whole line. |
 | `input.reason` | Forwarded to Mollie as the refund description, and stored on the order. |
 | `input.idempotencyKey` | Prevents a retried call from refunding twice. |
 
@@ -233,8 +257,8 @@ Lists orders, oldest-created first.
 
 ### `db`
 
-The database you passed in. Use it for catalog writes (`db.products.save`,
-`db.products.delete`), reads (`db.products.list`), and your own queries.
+The database you passed in. Use it for catalog writes (`db.skus.save`,
+`db.skus.delete`), reads (`db.skus.list({ productId })`), and your own queries.
 
 ## A real-world shop
 
@@ -276,15 +300,15 @@ import { CommerceError } from "mollie-ecommerce";
 import { commerce } from "./shop.ts";
 
 const STATUS: Record<string, number> = {
-  product_not_found: 404,
-  product_inactive: 409,
+  sku_not_found: 404,
+  sku_inactive: 409,
   out_of_stock: 409,
   currency_mismatch: 422,
   empty_cart: 400,
 };
 
 export async function postCheckout(request: Request): Promise<Response> {
-  const cart = await request.json(); // { id, items, email, locale }
+  const cart = await request.json(); // { id, items: [{ skuId, quantity }], email, locale }
 
   try {
     const { order, checkoutUrl } = await commerce.checkout({
@@ -311,8 +335,8 @@ function customerMessage(error: CommerceError): string {
   switch (error.code) {
     case "out_of_stock":
       return "Sorry — one of those just sold out.";
-    case "product_inactive":
-    case "product_not_found":
+    case "sku_inactive":
+    case "sku_not_found":
       return "That item is no longer available.";
     default:
       return "We could not start your payment. Please try again.";
@@ -379,13 +403,13 @@ export async function shipOrder(orderId: string, carrier: string, trackingCode: 
 }
 
 // A customer sends it back: record the return, refund the goods, restock.
-export async function acceptReturn(orderId: string, productId: string) {
+export async function acceptReturn(orderId: string, skuId: string) {
   await commerce.markReturned({ orderId, restock: true });
   const { refund } = await commerce.refund({
     orderId,
-    lines: [{ productId }],
+    lines: [{ skuId }],
     reason: "customer return",
-    idempotencyKey: `return-${orderId}-${productId}`,
+    idempotencyKey: `return-${orderId}-${skuId}`,
   });
   return refund;
 }
@@ -438,9 +462,9 @@ plug in your own.
 
 See [Using Postgres](#using-postgres) below for the full setup.
 
-Helpers: `SCHEMA_SQL` plus `orderToRow` / `rowToOrder` / `productToRow` /
-`rowToProduct` in `mollie-ecommerce/storage/rows`; `aggregateStock` for the
-repeated-product-id rule; the SQLite and Postgres adapters as worked examples;
+Helpers: `SCHEMA_SQL` plus `orderToRow` / `rowToOrder` / `skuToRow` /
+`rowToSku` in `mollie-ecommerce/storage/rows`; `aggregateStock` for the
+repeated-SKU-id rule; the SQLite and Postgres adapters as worked examples;
 and `describeDatabase` in `mollie-ecommerce/storage/conformance` — 18 contract
 tests to point at your own adapter:
 
@@ -454,6 +478,88 @@ No gateway call happens inside a transaction. Checkout is three phases: price
 the cart, reserve stock and insert the order (tx) → `createPayment` (no tx) →
 store the payment id and reconcile (tx). If the gateway call fails, a
 compensating transaction releases the stock and fails the order.
+
+## How these tables sit next to yours
+
+The library owns exactly two tables. Everything else in your shop stays in
+your schema, and the two halves meet at two deliberately loose joins.
+
+```
+  YOUR SCHEMA (you own it)                 THIS LIBRARY (it owns these two)
+  ─────────────────────────                ────────────────────────────────
+
+  products                                 skus
+  ├ id            PK ◄──────────────────┐  ├ id            PK  "tshirt-red-m"
+  ├ title            "T-shirt"           │ ├ name              "T-shirt — Red / M"
+  ├ description                          └─┤ product_id    FK? "tshirt"   (nullable)
+  ├ images                                 ├ kind             physical|digital|service
+  └ …                                      ├ price_cents      1999
+                                           ├ currency         "EUR"
+  product_options                          ├ stock            10    (NULL = unlimited)
+  ├ product_id    FK                       └ active           1
+  ├ name             "Size"
+  └ values           ["S","M","L"]         orders
+                                           ├ id            PK  "ord_…"
+  option_values_per_sku                    ├ version           optimistic lock
+  ├ sku_id        FK ────────────────────► ├ lines          JSON [{ skuId, name, kind,
+  ├ option           "Size"                │                      quantity, unitPrice,
+  └ value            "M"                   │                      total, productId }]
+                                           ├ total_cents       3998
+  customers                                ├ currency          "EUR"
+  ├ id            PK                       ├ payment_state     paid|open|…
+  ├ email         ◄──────────────────────► ├ customer_email    "ada@example.com"
+  └ …                                      ├ customer_locale   "nl_NL"
+                                           ├ payment_id     UQ  "tr_…"
+  carts, promotions, reviews,               ├ idempotency_key UQ  your cart id
+  addresses, invoices, …                   ├ delivery_state    ready|shipped|…
+  (none of the library's business)          ├ stock_reserved    1
+                                           ├ refunds        JSON [{ id, amount, state }]
+                                           └ created_at / updated_at
+```
+
+**`skus.product_id` → your `products.id`** is the variant join. It is nullable,
+unconstrained, and never interpreted by the library — it only stores, indexes
+and filters on it (`skus.list({ productId })`). Add a real foreign key if you
+want the database to enforce it:
+
+```sql
+ALTER TABLE skus
+  ADD CONSTRAINT skus_product_id_fkey
+  FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE SET NULL;
+```
+
+The library ships no such constraint, for two reasons: it does not know your
+table's name, and an adapter that assumed one could not be swapped for
+in-memory storage in tests.
+
+**`orders.customer_email` → your `customers.email`** is a soft link, by value.
+Orders deliberately do not reference a customer row: an order must stay
+readable after the customer is deleted, and guest checkout has no row to point
+at. Join on email when you need the customer, or add your own
+`orders.customer_id` column — the library ignores columns it does not know.
+
+**`orders.lines` holds snapshots, not references.** Each line copies the SKU's
+id, name, kind, unit price and `productId` at purchase time, so repricing or
+deleting a SKU never rewrites history and an invoice from last year still shows
+what was actually bought. That is also why there is no foreign key from lines
+to `skus`.
+
+### Who writes what
+
+| Table | Written by | Read by |
+| --- | --- | --- |
+| your `products`, options, images | you | you |
+| `skus` | you, via `db.skus.save()` | the library (pricing, stock), you |
+| `skus.stock` | **the library** (`reserveStock` / `releaseStock`) — and you, for restocks | both |
+| `orders` and everything in them | the library only | you, via `getOrder` / `findOrders` |
+
+Write `skus` from whatever already owns your catalog — a save hook, a nightly
+sync, an admin action. One row per purchasable variant, prices in minor units.
+Everything else the library does follows from those rows.
+
+Orders are the library's alone. Reading them directly is fine (they are plain
+rows); writing them behind its back breaks the optimistic lock, the stock
+accounting, and the payment reconciliation.
 
 ## Using Postgres
 
@@ -553,6 +659,7 @@ portability rather than for Postgres' richest options:
 | Booleans | `active`, `stock_reserved` as `INTEGER` 0/1 | Portable across engines. The mappers normalize them back to `boolean`. |
 | Collections | `lines`, `refunds` as `TEXT` holding JSON | Mapped with `JSON.parse`/`JSON.stringify`. |
 | Unlimited stock | `stock INTEGER NULL` | `NULL` means unlimited, and the reservation SQL skips those rows. |
+| Variant grouping | `skus.product_id TEXT NULL`, indexed | Your product id. The library stores and filters on it but never interprets it. |
 
 If you want to query inside the JSON, switch those columns to `jsonb` — but
 then adapt `rowToOrder`, because node-postgres hands back a parsed object and
@@ -579,7 +686,7 @@ const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 await applyPostgresSchema(pool);
 
 describeDatabase("my-postgres", async () => {
-  await pool.query("TRUNCATE products, orders");
+  await pool.query("TRUNCATE skus, orders");
   return createPostgresDatabase(pool);
 });
 ```
@@ -595,7 +702,7 @@ Point it at a throwaway database — it truncates both tables between tests.
 - **`duplicate_order` on insert** means `payment_id` or `idempotency_key`
   collided. Two orders cannot share a Mollie payment, and a repeated
   idempotency key is handled by `checkout` before it reaches the database.
-- **`relation "products" does not exist`** means the schema was never applied —
+- **`relation "skus" does not exist`** means the schema was never applied —
   call `applyPostgresSchema` or run your migration.
 - **Abandoned carts hold stock** until their payment expires. Mollie expires
   them and calls your webhook, but a periodic `syncOrder` pass frees stock

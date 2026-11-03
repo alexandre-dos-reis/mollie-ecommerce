@@ -1,32 +1,50 @@
 import type { Money } from "./money.ts";
 
-/* ----------------------------------------------------------------- products */
+/* --------------------------------------------------------------------- skus */
 
 /**
  * What kind of thing is being sold. It drives one decision: whether paying for
  * it completes delivery (`digital`, `service`) or something still has to ship
  * (`physical`).
+ *
+ * It lives on the SKU rather than the product because one product can be sold
+ * both ways — a book as a hardback and as an ebook.
  */
-export type ProductKind = "physical" | "digital" | "service";
+export type SkuKind = "physical" | "digital" | "service";
 
 /**
- * Mollie has no product concept, so this is ours — deliberately the minimum
- * needed to price a cart and build a payment. Anything else your shop shows
- * (images, SKUs, descriptions, VAT breakdowns, translations) belongs in your
- * own catalog, keyed by `id`.
+ * A SKU is the unit you actually sell: one price, one stock level. Mollie has
+ * no catalog concept at all, so this is the minimum needed to price a cart and
+ * build a payment.
+ *
+ * **Variants are not modeled here, and do not need to be.** A product
+ * ("T-shirt") has no single price or stock count; a purchasable combination
+ * ("T-shirt / Red / M") has both. Register one SKU per combination and keep
+ * the product, its options, images, descriptions and translations in your own
+ * catalog — this library only ever sees `tshirt-red-m, €19.99, 4 left`.
+ * Products without variants are simply one SKU.
  */
-export type Product = {
-  /** Your identifier. Stable: order lines keep a copy of it forever. */
+export type Sku = {
+  /** Your identifier, e.g. `"tshirt-red-m"`. Order lines keep a copy forever. */
   id: string;
-  /** Shown to the customer, and used to build the Mollie payment description. */
+  /**
+   * Shown to the customer and used to build the Mollie payment description, so
+   * make it identify the variant: `"T-shirt — Red / M"`.
+   */
   name: string;
-  kind: ProductKind;
-  /** Price per unit. Every product in one order must share a currency. */
+  kind: SkuKind;
+  /** Price per unit. Every SKU in one order must share a currency. */
   price: Money;
-  /** Units available. `undefined` means unlimited — stock is never tracked. */
+  /** Units available. `undefined` means unlimited — stock is not tracked. */
   stock?: number;
   /** `false` hides it from checkout. Defaults to true. */
   active?: boolean;
+  /**
+   * Optional grouping key: the product these SKUs are variants of. The library
+   * never interprets it, but it is indexed, so you can list a product's SKUs
+   * (`skus.list({ productId })`) and recognize siblings on an order.
+   */
+  productId?: string;
 };
 
 /* ------------------------------------------------------------------- orders */
@@ -56,15 +74,17 @@ export type DeliveryState =
   | "returned"
   | "canceled";
 
-/** A product as it was when the order was placed. Never updated afterwards. */
+/** A SKU as it was when the order was placed. Never updated afterwards. */
 export type OrderLine = {
-  productId: string;
+  skuId: string;
   name: string;
-  kind: ProductKind;
+  kind: SkuKind;
   quantity: number;
   unitPrice: Money;
   /** `unitPrice × quantity`. */
   total: Money;
+  /** Copied from the SKU, when it had one. */
+  productId?: string;
 };
 
 /** Just enough to reach the customer and localize their payment screen. */

@@ -16,13 +16,13 @@ Bun, which resolves them directly.
 
 ## Scope
 
-The library covers products, orders, payments, refunds, and delivery state —
-the minimum an ecommerce flow needs on top of Mollie. Deliberately out of
-scope:
+The library covers SKUs, orders, payments, refunds, and delivery state — the
+minimum an ecommerce flow needs on top of Mollie. Deliberately out of scope:
 
-- **Catalog concerns** — images, SKUs, descriptions, categories, VAT
-  breakdowns, translations. Keep them in your own catalog, keyed by product
-  `id`.
+- **Catalog structure** — products, option types, variant matrices, images,
+  descriptions, categories, VAT breakdowns, translations. Keep them in your own
+  tables and link them with `Sku.productId`; see "How these tables sit next to
+  yours" in the README.
 - **HTTP, frameworks, and webhook transport.** `handleWebhook(paymentId)` is
   the commerce operation; routing, signature checks, and status codes belong in
   your application.
@@ -68,8 +68,8 @@ describeDatabase("mysql", () => new MysqlDatabase({ url: process.env.DATABASE_UR
 `src/storage/sqlite.ts` and `src/storage/postgres.ts` are the worked examples,
 and `SCHEMA_SQL` plus the row mappers in `src/storage/rows.ts` do most of the
 mapping for SQL engines — both adapters apply that DDL unchanged. Use
-`aggregateStock` in `reserveStock`/`releaseStock`: repeated product ids must
-consume their sum, or the adapter oversells.
+`aggregateStock` in `reserveStock`/`releaseStock`: repeated SKU ids must consume
+their sum, or the adapter oversells.
 Adapters for other databases are welcome — in-repo if they need no extra
 dependency, otherwise as your own package.
 

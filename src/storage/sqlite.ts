@@ -4,22 +4,22 @@ import type {
   Database,
   OrderQuery,
   OrderStore,
-  ProductQuery,
-  ProductStore,
+  SkuQuery,
+  SkuStore,
   StockChange,
   StockShortage,
   Stores,
 } from "../ports.ts";
-import type { Order, Product } from "../types.ts";
+import type { Order, Sku } from "../types.ts";
 import { aggregateStock } from "./stock.ts";
 import {
   orderToRow,
-  productToRow,
+  skuToRow,
   rowToOrder,
-  rowToProduct,
+  rowToSku,
   SCHEMA_SQL,
   type OrderRow,
-  type ProductRow,
+  type SkuRow,
 } from "./rows.ts";
 
 /**
@@ -28,26 +28,26 @@ import {
  * plain enough to port to Postgres or MySQL by swapping placeholders and the
  * `transaction` helper.
  */
-export class SqliteProductStore implements ProductStore {
+export class SqliteSkuStore implements SkuStore {
   private savepoints = 0;
 
   constructor(private readonly db: Sqlite) {}
 
-  async get(id: string): Promise<Product | null> {
-    const row = this.db.query<ProductRow, [string]>("SELECT * FROM products WHERE id = ?").get(id);
-    return row ? rowToProduct(row) : null;
+  async get(id: string): Promise<Sku | null> {
+    const row = this.db.query<SkuRow, [string]>("SELECT * FROM skus WHERE id = ?").get(id);
+    return row ? rowToSku(row) : null;
   }
 
-  async getMany(ids: string[]): Promise<Product[]> {
+  async getMany(ids: string[]): Promise<Sku[]> {
     if (ids.length === 0) return [];
     const holes = ids.map(() => "?").join(", ");
     const rows = this.db
-      .query<ProductRow, string[]>(`SELECT * FROM products WHERE id IN (${holes})`)
+      .query<SkuRow, string[]>(`SELECT * FROM skus WHERE id IN (${holes})`)
       .all(...ids);
-    return rows.map(rowToProduct);
+    return rows.map(rowToSku);
   }
 
-  async list(query: ProductQuery = {}): Promise<Product[]> {
+  async list(query: SkuQuery = {}): Promise<Sku[]> {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (query.kind !== undefined) {
@@ -58,8 +58,12 @@ export class SqliteProductStore implements ProductStore {
       where.push("active = ?");
       params.push(query.active ? 1 : 0);
     }
+    if (query.productId !== undefined) {
+      where.push("product_id = ?");
+      params.push(query.productId);
+    }
     const sql = [
-      "SELECT * FROM products",
+      "SELECT * FROM skus",
       where.length ? `WHERE ${where.join(" AND ")}` : "",
       "ORDER BY id",
       limitOffset(query, params),
@@ -67,17 +71,17 @@ export class SqliteProductStore implements ProductStore {
       .filter(Boolean)
       .join(" ");
     return this.db
-      .query<ProductRow, (string | number)[]>(sql)
+      .query<SkuRow, (string | number)[]>(sql)
       .all(...params)
-      .map(rowToProduct);
+      .map(rowToSku);
   }
 
-  async save(product: Product): Promise<Product> {
-    const row = productToRow(product);
+  async save(sku: Sku): Promise<Sku> {
+    const row = skuToRow(sku);
     const columns = Object.keys(row);
     this.db
       .query(
-        `INSERT INTO products (${columns.join(", ")})
+        `INSERT INTO skus (${columns.join(", ")})
          VALUES (${columns.map((column) => `$${column}`).join(", ")})
          ON CONFLICT (id) DO UPDATE SET
            ${columns
@@ -86,22 +90,22 @@ export class SqliteProductStore implements ProductStore {
              .join(", ")}`,
       )
       .run(bind(row));
-    return product;
+    return rowToSku(row);
   }
 
   async delete(id: string): Promise<void> {
-    this.db.query("DELETE FROM products WHERE id = ?").run(id);
+    this.db.query("DELETE FROM skus WHERE id = ?").run(id);
   }
 
   async reserveStock(items: StockChange[]): Promise<StockShortage[]> {
     const shortages: StockShortage[] = [];
-    const reserve = this.db.query<ProductRow, [number, string, number]>(
-      `UPDATE products SET stock = stock - ?
+    const reserve = this.db.query<SkuRow, [number, string, number]>(
+      `UPDATE skus SET stock = stock - ?
        WHERE id = ? AND stock IS NOT NULL AND stock >= ?
        RETURNING *`,
     );
     const probe = this.db.query<{ stock: number | null }, [string]>(
-      "SELECT stock FROM products WHERE id = ?",
+      "SELECT stock FROM skus WHERE id = ?",
     );
 
     const wanted = aggregateStock(items);
@@ -112,14 +116,14 @@ export class SqliteProductStore implements ProductStore {
     this.db.exec(`SAVEPOINT ${savepoint}`);
     try {
       for (const item of wanted) {
-        if (reserve.get(item.quantity, item.productId, item.quantity)) continue;
+        if (reserve.get(item.quantity, item.skuId, item.quantity)) continue;
 
-        const existing = probe.get(item.productId);
+        const existing = probe.get(item.skuId);
         if (!existing) {
-          shortages.push({ productId: item.productId, requested: item.quantity, available: null });
+          shortages.push({ skuId: item.skuId, requested: item.quantity, available: null });
         } else if (existing.stock !== null) {
           shortages.push({
-            productId: item.productId,
+            skuId: item.skuId,
             requested: item.quantity,
             available: existing.stock,
           });
@@ -135,9 +139,9 @@ export class SqliteProductStore implements ProductStore {
 
   async releaseStock(items: StockChange[]): Promise<void> {
     const release = this.db.query<never, [number, string]>(
-      "UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL",
+      "UPDATE skus SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL",
     );
-    for (const item of aggregateStock(items)) release.run(item.quantity, item.productId);
+    for (const item of aggregateStock(items)) release.run(item.quantity, item.skuId);
   }
 }
 
@@ -251,7 +255,7 @@ export type SqliteDatabaseOptions = {
 
 export class SqliteDatabase implements Database {
   readonly db: Sqlite;
-  readonly products: SqliteProductStore;
+  readonly skus: SqliteSkuStore;
   readonly orders: SqliteOrderStore;
   private depth = 0;
 
@@ -259,19 +263,19 @@ export class SqliteDatabase implements Database {
     this.db = options.db ?? new Sqlite(options.filename ?? ":memory:");
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     if (options.migrate !== false) this.db.exec(SCHEMA_SQL);
-    this.products = new SqliteProductStore(this.db);
+    this.skus = new SqliteSkuStore(this.db);
     this.orders = new SqliteOrderStore(this.db);
   }
 
   async transaction<T>(run: (stores: Stores) => Promise<T>): Promise<T> {
     // bun:sqlite's transaction() helper is synchronous, and our store methods
     // are async, so drive BEGIN/COMMIT directly. Nested calls join the parent.
-    if (this.depth > 0) return run({ products: this.products, orders: this.orders });
+    if (this.depth > 0) return run({ skus: this.skus, orders: this.orders });
 
     this.db.exec("BEGIN");
     this.depth++;
     try {
-      const result = await run({ products: this.products, orders: this.orders });
+      const result = await run({ skus: this.skus, orders: this.orders });
       this.db.exec("COMMIT");
       return result;
     } catch (error) {

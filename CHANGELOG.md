@@ -6,6 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-03
+
+**Breaking.** The sellable unit is now a SKU rather than a product, because a
+product has no single price or stock level and a purchasable variant does. This
+removes the need to model variants at all: register one SKU per combination and
+keep products, options and images in your own catalog.
+
+### Changed
+
+- `Product` → `Sku`, with a new optional `productId` grouping key (indexed,
+  never interpreted by the library) and `ProductKind` → `SkuKind`. `kind` now
+  lives per SKU, so one product can ship physically and download digitally.
+- `CartItem.productId` → `skuId`; `refund({ lines })` takes `{ skuId }`;
+  `OrderLine.productId` → `skuId`, plus an optional `productId` copied from the
+  SKU at purchase time.
+- `Database.products` → `Database.skus`; `ProductStore` → `SkuStore`;
+  `ProductQuery` → `SkuQuery`, which gained a `productId` filter for listing a
+  product's variants. Adapter classes follow: `InMemorySkuStore`,
+  `SqliteSkuStore`, `PostgresSkuStore`.
+- `StockChange.productId` → `skuId`; `StockShortage.productId` → `skuId`.
+- Error codes `product_not_found` → `sku_not_found` and `product_inactive` →
+  `sku_inactive`.
+- Row mappers `productToRow` / `rowToProduct` → `skuToRow` / `rowToSku`;
+  `ProductRow` → `SkuRow` with a `product_id` column.
+- Database schema: table `products` → `skus`, with a nullable `product_id`
+  column and a `skus_product_id` index.
+
+### Migration
+
+Rename the table and add the grouping column; existing rows need no other
+change, since every other column keeps its name and meaning:
+
+```sql
+ALTER TABLE products RENAME TO skus;
+ALTER TABLE skus ADD COLUMN product_id TEXT;
+CREATE INDEX IF NOT EXISTS skus_product_id ON skus (product_id);
+```
+
+Stored orders need no migration: `OrderLine.productId` becomes `skuId`, and the
+JSON already holds the id of the thing that was sold. If you want old orders to
+read back with the new field name:
+
+```sql
+-- Postgres
+UPDATE orders SET lines = replace(lines, '"productId"', '"skuId"');
+```
+
+In code, rename `productId` to `skuId` at your call sites — your existing
+product ids are valid SKU ids, so nothing needs re-keying. To adopt variants,
+add one SKU per combination and set `productId` on each.
+
 ## 0.2.0 — 2026-11-03
 
 ### Added

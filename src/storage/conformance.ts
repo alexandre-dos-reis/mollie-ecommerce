@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { CommerceError } from "../errors.ts";
 import { money } from "../money.ts";
 import type { Database } from "../ports.ts";
-import type { Order, Product } from "../types.ts";
+import type { Order, Sku } from "../types.ts";
 
 /**
  * Contract tests for a {@link Database} implementation. Call it from a test
@@ -17,7 +17,7 @@ import type { Order, Product } from "../types.ts";
 export function describeDatabase(name: string, factory: () => Database | Promise<Database>): void {
   let db: Database;
 
-  const product = (overrides: Partial<Product> = {}): Product => ({
+  const sku = (overrides: Partial<Sku> = {}): Sku => ({
     id: "mug",
     name: "Enamel mug",
     kind: "physical",
@@ -31,7 +31,7 @@ export function describeDatabase(name: string, factory: () => Database | Promise
     version: 0,
     lines: [
       {
-        productId: "mug",
+        skuId: "mug",
         name: "Enamel mug",
         kind: "physical",
         quantity: 2,
@@ -52,88 +52,88 @@ export function describeDatabase(name: string, factory: () => Database | Promise
 
   beforeEach(async () => {
     db = await factory();
-    await db.products.save(product());
+    await db.skus.save(sku());
   });
 
-  test(`${name}: products round-trip without losing fields`, async () => {
-    const full = product({ id: "full", kind: "service", stock: 3, active: false });
-    await db.products.save(full);
-    expect(await db.products.get("full")).toEqual(full);
+  test(`${name}: skus round-trip without losing fields`, async () => {
+    const full = sku({ id: "full", kind: "service", stock: 3, active: false });
+    await db.skus.save(full);
+    expect(await db.skus.get("full")).toEqual(full);
   });
 
   test(`${name}: unlimited stock survives the round trip as undefined`, async () => {
-    await db.products.save(product({ id: "ebook", kind: "digital", stock: undefined }));
-    const stored = await db.products.get("ebook");
+    await db.skus.save(sku({ id: "ebook", kind: "digital", stock: undefined }));
+    const stored = await db.skus.get("ebook");
     expect(stored?.stock).toBeUndefined();
   });
 
   test(`${name}: getMany batches and tolerates missing ids`, async () => {
-    await db.products.save(product({ id: "second" }));
-    const found = await db.products.getMany(["mug", "second", "ghost"]);
+    await db.skus.save(sku({ id: "second" }));
+    const found = await db.skus.getMany(["mug", "second", "ghost"]);
     expect(found.map((p) => p.id).sort()).toEqual(["mug", "second"]);
-    expect(await db.products.getMany([])).toEqual([]);
+    expect(await db.skus.getMany([])).toEqual([]);
   });
 
   test(`${name}: list filters on kind and active`, async () => {
-    await db.products.save(product({ id: "ebook", kind: "digital" }));
-    await db.products.save(product({ id: "gone", active: false }));
-    expect((await db.products.list({ kind: "digital" })).map((p) => p.id)).toEqual(["ebook"]);
-    expect((await db.products.list({ active: false })).map((p) => p.id)).toEqual(["gone"]);
-    expect(await db.products.list({ limit: 1 })).toHaveLength(1);
+    await db.skus.save(sku({ id: "ebook", kind: "digital" }));
+    await db.skus.save(sku({ id: "gone", active: false }));
+    expect((await db.skus.list({ kind: "digital" })).map((p) => p.id)).toEqual(["ebook"]);
+    expect((await db.skus.list({ active: false })).map((p) => p.id)).toEqual(["gone"]);
+    expect(await db.skus.list({ limit: 1 })).toHaveLength(1);
   });
 
   test(`${name}: reserveStock decrements, and is all-or-nothing on shortage`, async () => {
-    expect(await db.products.reserveStock([{ productId: "mug", quantity: 4 }])).toEqual([]);
-    expect((await db.products.get("mug"))?.stock).toBe(6);
+    expect(await db.skus.reserveStock([{ skuId: "mug", quantity: 4 }])).toEqual([]);
+    expect((await db.skus.get("mug"))?.stock).toBe(6);
 
-    await db.products.save(product({ id: "scarce", stock: 1 }));
-    const shortages = await db.products.reserveStock([
-      { productId: "mug", quantity: 1 },
-      { productId: "scarce", quantity: 2 },
+    await db.skus.save(sku({ id: "scarce", stock: 1 }));
+    const shortages = await db.skus.reserveStock([
+      { skuId: "mug", quantity: 1 },
+      { skuId: "scarce", quantity: 2 },
     ]);
-    expect(shortages).toEqual([{ productId: "scarce", requested: 2, available: 1 }]);
+    expect(shortages).toEqual([{ skuId: "scarce", requested: 2, available: 1 }]);
     // The mug must not have been touched by the failed batch.
-    expect((await db.products.get("mug"))?.stock).toBe(6);
-    expect((await db.products.get("scarce"))?.stock).toBe(1);
+    expect((await db.skus.get("mug"))?.stock).toBe(6);
+    expect((await db.skus.get("scarce"))?.stock).toBe(1);
   });
 
   test(`${name}: reserveStock aggregates repeated product ids`, async () => {
-    // Two lines for the same product must consume the sum, not be checked and
+    // Two lines for the same SKU must consume the sum, not be checked and
     // decremented independently — otherwise the second line oversells.
-    await db.products.save(product({ id: "scarce", stock: 3 }));
-    const shortages = await db.products.reserveStock([
-      { productId: "scarce", quantity: 2 },
-      { productId: "scarce", quantity: 2 },
+    await db.skus.save(sku({ id: "scarce", stock: 3 }));
+    const shortages = await db.skus.reserveStock([
+      { skuId: "scarce", quantity: 2 },
+      { skuId: "scarce", quantity: 2 },
     ]);
-    expect(shortages).toEqual([{ productId: "scarce", requested: 4, available: 3 }]);
-    expect((await db.products.get("scarce"))?.stock).toBe(3);
+    expect(shortages).toEqual([{ skuId: "scarce", requested: 4, available: 3 }]);
+    expect((await db.skus.get("scarce"))?.stock).toBe(3);
 
     expect(
-      await db.products.reserveStock([
-        { productId: "scarce", quantity: 2 },
-        { productId: "scarce", quantity: 1 },
+      await db.skus.reserveStock([
+        { skuId: "scarce", quantity: 2 },
+        { skuId: "scarce", quantity: 1 },
       ]),
     ).toEqual([]);
-    expect((await db.products.get("scarce"))?.stock).toBe(0);
+    expect((await db.skus.get("scarce"))?.stock).toBe(0);
   });
 
-  test(`${name}: reserveStock reports missing products and ignores unlimited ones`, async () => {
-    expect(await db.products.reserveStock([{ productId: "ghost", quantity: 1 }])).toEqual([
-      { productId: "ghost", requested: 1, available: null },
+  test(`${name}: reserveStock reports missing skus and ignores unlimited ones`, async () => {
+    expect(await db.skus.reserveStock([{ skuId: "ghost", quantity: 1 }])).toEqual([
+      { skuId: "ghost", requested: 1, available: null },
     ]);
-    await db.products.save(product({ id: "ebook", stock: undefined }));
-    expect(await db.products.reserveStock([{ productId: "ebook", quantity: 99 }])).toEqual([]);
-    expect((await db.products.get("ebook"))?.stock).toBeUndefined();
+    await db.skus.save(sku({ id: "ebook", stock: undefined }));
+    expect(await db.skus.reserveStock([{ skuId: "ebook", quantity: 99 }])).toEqual([]);
+    expect((await db.skus.get("ebook"))?.stock).toBeUndefined();
   });
 
-  test(`${name}: releaseStock gives stock back and skips unlimited products`, async () => {
-    await db.products.reserveStock([{ productId: "mug", quantity: 3 }]);
-    await db.products.releaseStock([{ productId: "mug", quantity: 3 }]);
-    expect((await db.products.get("mug"))?.stock).toBe(10);
+  test(`${name}: releaseStock gives stock back and skips unlimited skus`, async () => {
+    await db.skus.reserveStock([{ skuId: "mug", quantity: 3 }]);
+    await db.skus.releaseStock([{ skuId: "mug", quantity: 3 }]);
+    expect((await db.skus.get("mug"))?.stock).toBe(10);
 
-    await db.products.save(product({ id: "ebook", stock: undefined }));
-    await db.products.releaseStock([{ productId: "ebook", quantity: 3 }]);
-    expect((await db.products.get("ebook"))?.stock).toBeUndefined();
+    await db.skus.save(sku({ id: "ebook", stock: undefined }));
+    await db.skus.releaseStock([{ skuId: "ebook", quantity: 3 }]);
+    expect((await db.skus.get("ebook"))?.stock).toBeUndefined();
   });
 
   test(`${name}: orders round-trip with their lines and refunds`, async () => {
@@ -240,21 +240,21 @@ export function describeDatabase(name: string, factory: () => Database | Promise
   test(`${name}: a transaction commits every write together`, async () => {
     await db.transaction(async (stores) => {
       await stores.orders.insert(order({ id: "committed" }));
-      await stores.products.reserveStock([{ productId: "mug", quantity: 2 }]);
+      await stores.skus.reserveStock([{ skuId: "mug", quantity: 2 }]);
     });
     expect(await db.orders.get("committed")).not.toBeNull();
-    expect((await db.products.get("mug"))?.stock).toBe(8);
+    expect((await db.skus.get("mug"))?.stock).toBe(8);
   });
 
   test(`${name}: a throwing transaction rolls every write back`, async () => {
     const boom = db.transaction(async (stores) => {
       await stores.orders.insert(order({ id: "rolled-back" }));
-      await stores.products.reserveStock([{ productId: "mug", quantity: 2 }]);
+      await stores.skus.reserveStock([{ skuId: "mug", quantity: 2 }]);
       throw new Error("boom");
     });
     await expect(boom).rejects.toThrow("boom");
     expect(await db.orders.get("rolled-back")).toBeNull();
-    expect((await db.products.get("mug"))?.stock).toBe(10);
+    expect((await db.skus.get("mug"))?.stock).toBe(10);
   });
 
   test(`${name}: a transaction's return value reaches the caller`, async () => {
