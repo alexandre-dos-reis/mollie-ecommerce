@@ -38,8 +38,16 @@ PR so we can check the fit first.
 `bun test` must pass, and so must `bun run typecheck`.
 
 - **Lifecycle tests run against every storage adapter.** `src/commerce.test.ts`
-  loops over `InMemoryDatabase` and `SqliteDatabase`; a change that only works
-  on one of them will fail.
+  loops over `InMemoryDatabase`, `SqliteDatabase`, and the Postgres stores; a
+  change that only works on one of them will fail. Postgres runs on PGlite
+  (`test/pglite-pool.ts`) — a devDependency, never a dependency of the
+  library. The instance is shared and truncated per test, since booting a
+  WebAssembly Postgres is slow; keep it that way.
+- **The driver contract is checked by the compiler.** `test/pg-compat.test.ts`
+  asserts node-postgres' `Pool` and `PoolClient` still satisfy the adapter's
+  ports, so the setup documented in the README cannot silently stop compiling.
+  `pg` and `@types/pg` are devDependencies for that guard alone — the adapter
+  imports no driver.
 - **Storage changes must satisfy the conformance suite.** `describeDatabase` in
   `src/storage/conformance.ts` is the contract. If you add a port method, add
   its contract test there — that is what keeps adapters interchangeable.
@@ -53,11 +61,15 @@ it:
 
 ```ts
 import { describeDatabase } from "mollie-ecommerce/storage/conformance";
-describeDatabase("postgres", () => new PostgresDatabase({ url: process.env.DATABASE_URL }));
+
+describeDatabase("mysql", () => new MysqlDatabase({ url: process.env.DATABASE_URL }));
 ```
 
-`src/storage/sqlite.ts` is the worked example, and `SCHEMA_SQL` plus the row
-mappers in `src/storage/rows.ts` do most of the mapping for SQL engines.
+`src/storage/sqlite.ts` and `src/storage/postgres.ts` are the worked examples,
+and `SCHEMA_SQL` plus the row mappers in `src/storage/rows.ts` do most of the
+mapping for SQL engines — both adapters apply that DDL unchanged. Use
+`aggregateStock` in `reserveStock`/`releaseStock`: repeated product ids must
+consume their sum, or the adapter oversells.
 Adapters for other databases are welcome — in-repo if they need no extra
 dependency, otherwise as your own package.
 

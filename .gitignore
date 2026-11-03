@@ -33,7 +33,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
-# local sqlite databases
+# local databases (sqlite files, pglite data dirs)
+pgdata
+pg-data
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

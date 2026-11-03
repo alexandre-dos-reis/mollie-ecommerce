@@ -10,6 +10,7 @@ import type {
   Stores,
 } from "../ports.ts";
 import type { Order, Product } from "../types.ts";
+import { aggregateStock } from "./stock.ts";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -61,8 +62,9 @@ export class InMemoryProductStore implements ProductStore {
   }
 
   async reserveStock(items: StockChange[]): Promise<StockShortage[]> {
+    const wanted = aggregateStock(items);
     const shortages: StockShortage[] = [];
-    for (const item of items) {
+    for (const item of wanted) {
       const product = this.products.get(item.productId);
       if (!product) {
         shortages.push({ productId: item.productId, requested: item.quantity, available: null });
@@ -77,7 +79,7 @@ export class InMemoryProductStore implements ProductStore {
     // All-or-nothing, like the SQL implementation's transaction.
     if (shortages.length > 0) return shortages;
 
-    for (const item of items) {
+    for (const item of wanted) {
       const product = this.products.get(item.productId)!;
       if (product.stock !== undefined) product.stock -= item.quantity;
     }
@@ -85,7 +87,7 @@ export class InMemoryProductStore implements ProductStore {
   }
 
   async releaseStock(items: StockChange[]): Promise<void> {
-    for (const item of items) {
+    for (const item of aggregateStock(items)) {
       const product = this.products.get(item.productId);
       if (product && product.stock !== undefined) product.stock += item.quantity;
     }

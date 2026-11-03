@@ -14,8 +14,11 @@ export {
   InMemoryOrderStore,
   InMemoryProductStore,
 } from "./storage/memory.ts";
-// The SQL adapter is NOT re-exported here: it imports `bun:sqlite`, and the
-// core must stay runtime-agnostic. Import it from `mollie-ecommerce/storage/sqlite`.
+// The SQL adapters are NOT re-exported here, so the core pulls in nothing.
+// Import them from `mollie-ecommerce/storage/sqlite` (which needs
+// `bun:sqlite`) and `mollie-ecommerce/storage/postgres` (bring your own
+// driver).
+export { aggregateStock } from "./storage/stock.ts";
 export {
   orderToRow,
   productToRow,

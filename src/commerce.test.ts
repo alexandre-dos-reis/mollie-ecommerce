@@ -6,6 +6,7 @@ import { fromMollieAmount, money, toMollieAmount } from "./money.ts";
 import type { Database } from "./ports.ts";
 import { InMemoryDatabase } from "./storage/memory.ts";
 import { SqliteDatabase } from "./storage/sqlite.ts";
+import { createPglitePostgres } from "../test/pglite-pool.ts";
 import type { Product } from "./types.ts";
 
 const mug: Product = {
@@ -32,9 +33,17 @@ test("money round-trips through Mollie's decimal strings", () => {
 });
 
 /** The whole lifecycle runs against every storage adapter. */
-const databases: Record<string, () => Database> = {
+// The Postgres adapter is exercised through PGlite, a WebAssembly Postgres
+// used only in tests. Booting it takes ~1s, so it is shared and truncated.
+const postgres = await createPglitePostgres();
+
+const databases: Record<string, () => Database | Promise<Database>> = {
   memory: () => new InMemoryDatabase(),
   sqlite: () => new SqliteDatabase({ filename: ":memory:" }),
+  postgres: async () => {
+    await postgres.reset();
+    return postgres.db;
+  },
 };
 
 for (const [name, makeDb] of Object.entries(databases)) {
@@ -45,7 +54,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
 
     beforeEach(async () => {
       gateway = new FakePaymentGateway();
-      db = makeDb();
+      db = await makeDb();
       await db.products.save(mug);
       await db.products.save(ebook);
       commerce = createCommerce({

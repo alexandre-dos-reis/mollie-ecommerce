@@ -6,6 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-03
+
+### Added
+
+- **Postgres storage** (`mollie-ecommerce/storage/postgres`):
+  `createPostgresDatabase(pool)`, `PostgresProductStore`,
+  `PostgresOrderStore`, and `applyPostgresSchema`. The module imports no
+  driver — you pass a connection, so anything with node-postgres' shape works
+  (`query(sql, params) → { rows }` plus `connect()`). Transactions check out
+  one connection and run `BEGIN`/`COMMIT` on it; a nested call joins the
+  outer transaction instead of taking a second connection.
+- `aggregateStock` helper, exported for storage adapters.
+- README: a "Using Postgres" guide (driver install, schema and migrations,
+  pool and pooler behavior, column-type rationale, conformance verification,
+  operating notes) and an end-to-end "real-world shop" walkthrough covering
+  checkout, webhook, redirect return, fulfillment, and reconciliation.
+
+### Fixed
+
+- **`reserveStock` could oversell when the same product appeared twice in one
+  call.** The in-memory and SQLite adapters checked each entry against the
+  full stock independently and then decremented both, so `[{mug, 2}, {mug, 2}]`
+  against a stock of 3 succeeded and left −1. All adapters now aggregate
+  repeated product ids via `aggregateStock`, and the conformance suite covers
+  it. Checkout was never affected, since it merges cart lines first; direct
+  callers of the port were.
+
+### Changed
+
+- `describeDatabase` now runs 18 contract tests (was 17), and the lifecycle
+  suite runs against all three storage adapters. Postgres is exercised with
+  [PGlite](https://pglite.dev) through a pool shim, plus a compile-time guard
+  that node-postgres satisfies the adapter's ports — both devDependencies
+  only.
+
 ## 0.1.0 — 2026-11-03
 
 First release. Pre-1.0, so the public API may still change in minor versions

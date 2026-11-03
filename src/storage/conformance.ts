@@ -97,6 +97,26 @@ export function describeDatabase(name: string, factory: () => Database | Promise
     expect((await db.products.get("scarce"))?.stock).toBe(1);
   });
 
+  test(`${name}: reserveStock aggregates repeated product ids`, async () => {
+    // Two lines for the same product must consume the sum, not be checked and
+    // decremented independently — otherwise the second line oversells.
+    await db.products.save(product({ id: "scarce", stock: 3 }));
+    const shortages = await db.products.reserveStock([
+      { productId: "scarce", quantity: 2 },
+      { productId: "scarce", quantity: 2 },
+    ]);
+    expect(shortages).toEqual([{ productId: "scarce", requested: 4, available: 3 }]);
+    expect((await db.products.get("scarce"))?.stock).toBe(3);
+
+    expect(
+      await db.products.reserveStock([
+        { productId: "scarce", quantity: 2 },
+        { productId: "scarce", quantity: 1 },
+      ]),
+    ).toEqual([]);
+    expect((await db.products.get("scarce"))?.stock).toBe(0);
+  });
+
   test(`${name}: reserveStock reports missing products and ignores unlimited ones`, async () => {
     expect(await db.products.reserveStock([{ productId: "ghost", quantity: 1 }])).toEqual([
       { productId: "ghost", requested: 1, available: null },

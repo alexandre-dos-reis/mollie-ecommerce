@@ -11,6 +11,7 @@ import type {
   Stores,
 } from "../ports.ts";
 import type { Order, Product } from "../types.ts";
+import { aggregateStock } from "./stock.ts";
 import {
   orderToRow,
   productToRow,
@@ -103,12 +104,14 @@ export class SqliteProductStore implements ProductStore {
       "SELECT stock FROM products WHERE id = ?",
     );
 
+    const wanted = aggregateStock(items);
+
     // A savepoint makes the reservation all-or-nothing on its own, whether or
     // not a surrounding transaction is open.
     const savepoint = `reserve_${(this.savepoints++).toString(36)}`;
     this.db.exec(`SAVEPOINT ${savepoint}`);
     try {
-      for (const item of items) {
+      for (const item of wanted) {
         if (reserve.get(item.quantity, item.productId, item.quantity)) continue;
 
         const existing = probe.get(item.productId);
@@ -134,7 +137,7 @@ export class SqliteProductStore implements ProductStore {
     const release = this.db.query<never, [number, string]>(
       "UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL",
     );
-    for (const item of items) release.run(item.quantity, item.productId);
+    for (const item of aggregateStock(items)) release.run(item.quantity, item.productId);
   }
 }
 
