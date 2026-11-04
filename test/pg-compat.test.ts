@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { Pool, type PoolClient } from "pg";
-import type { Database } from "../src/ports.ts";
+import type { Database } from "./storage/ports.ts";
 import {
   createPostgresDatabase,
   type PostgresClient,
   type PostgresPool,
   type Queryable,
-} from "../src/storage/postgres.ts";
+} from "./storage/postgres.ts";
 
 /**
  * Compile-time guard for the setup documented in the README: node-postgres'

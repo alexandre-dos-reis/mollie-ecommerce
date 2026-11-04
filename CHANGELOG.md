@@ -6,6 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.4.0 — 2026-11-04
+
+**Breaking.** `createCommerce` no longer performs storage work, and the package
+no longer ships storage adapters. It opens no transaction, issues no query, and
+knows nothing about tables: it calls seven handlers you fulfil, and persistence
+is yours — your migrations, your pool, your naming.
+
+### Added
+
+- `CommerceStorage` — the handler contract: `loadSkus`, `findOrder`,
+  `findOrderByPaymentId`, `findOrderByIdempotencyKey`, `listOrders`, plus the
+  two write handlers `createOrder` (order and stock together, returning
+  `{ status: "out_of_stock", shortages }` rather than throwing) and
+  `mutateOrder` (read, apply a mutation, persist atomically with any
+  `releaseStock`). Atomicity and concurrency are now the handler's contract,
+  documented per handler.
+- `examples/memory-storage.ts` — a complete handler implementation over two
+  maps, published with the package as a copy-paste starting point, and covered
+  by this repo's lifecycle tests so it cannot drift.
+- `describeCommerceStorage` in `mollie-ecommerce/conformance` — 11
+  contract tests for a handler implementation, covering the cases that are easy
+  to get subtly wrong: a shortage must not persist the order, `releaseStock`
+  must land in the same write as its mutation, and a throwing mutator must
+  leave nothing behind.
+- README: a "Persistence" section with the contract and a worked example, a
+  "Reference schema" section (the SQL the test suites use, as a starting point
+  you own), and a revised map of how the data sits next to your catalog.
+
+### Removed
+
+- **All storage adapters and their exports.** `InMemoryDatabase`,
+  `SqliteDatabase`, the Postgres stores, `storageFromDatabase`, the `Database`
+  / `SkuStore` / `OrderStore` ports, the row mappers, `SCHEMA_SQL`,
+  `describeDatabase`, and the `./storage/*` subpaths are gone from the package.
+  They live on under `test/` as fixtures, so the lifecycle suite still runs
+  against in-memory, SQLite and Postgres storage.
+- `createCommerce({ db })`. Pass `storage` instead; to keep the old behavior,
+  copy `test/storage/from-database.ts` into your project.
+
+### Changed
+
+- `commerce.db` → `commerce.storage`, exposing the handlers you passed in.
+- The `./conformance` subpath replaces `./storage/conformance`.
+
 ## 0.3.0 — 2026-11-03
 
 **Breaking.** The sellable unit is now a SKU rather than a product, because a

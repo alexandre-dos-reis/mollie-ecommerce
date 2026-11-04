@@ -1,5 +1,5 @@
-import { money } from "../money.ts";
-import type { Order, OrderLine, Refund, Sku } from "../types.ts";
+import { money } from "../../src/money.ts";
+import type { Order, OrderLine, Refund, Sku } from "../../src/types.ts";
 
 /**
  * Flat row shapes for the two entities, plus mappers. Nothing here knows about

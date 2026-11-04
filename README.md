@@ -7,8 +7,9 @@ Mollie has payments and refunds but no catalog. This library adds the minimum
 an ecommerce flow needs on top: SKUs, orders, and a delivery lifecycle —
 nothing else.
 
-It is a library, not a server: no HTTP layer, no framework, no database
-required. Call the methods from whatever you already run.
+It is a library, not a framework: no HTTP layer, no ORM, no database adapters.
+It calls seven storage handlers you fulfil, and leaves persistence entirely to
+you. Call the methods from whatever you already run.
 
 ## Install
 
@@ -23,7 +24,7 @@ output for Node to consume.
 ```bash
 # Working on the library itself
 bun install
-bun run check     # typecheck + 115 tests
+bun run check     # typecheck + 139 tests
 bun run example   # the full lifecycle, no Mollie account needed
 ```
 
@@ -34,10 +35,11 @@ reservation, and delivery state.
 
 Out of scope, by design: catalog structure (products, options, variant
 matrices, images, descriptions, categories, VAT breakdowns, translations)
-belongs in your own tables, linked by `Sku.productId`; HTTP routing and webhook
-transport belong in your application; and Mollie features unrelated to this
-lifecycle — subscriptions, payment links, settlements, Connect — are better
-reached through the Mollie SDK directly.
+belongs in your own tables, linked by `Sku.productId`; persistence is yours to
+fulfil, so no database adapters, migrations or ORMs ship; HTTP routing and
+webhook transport belong in your application; and Mollie features unrelated to
+this lifecycle — subscriptions, payment links, settlements, Connect — are
+better reached through the Mollie SDK directly.
 
 ## Model
 
@@ -118,17 +120,21 @@ Anything outside that graph throws `invalid_delivery_transition`.
 ## Setup
 
 ```ts
-import { createCommerce, createMollieGateway, money } from "mollie-ecommerce";
-import { SqliteDatabase } from "mollie-ecommerce/storage/sqlite";
+import { createCommerce, createMollieGateway } from "mollie-ecommerce";
+import { myStorage } from "./storage.ts"; // your seven handlers — see Persistence
 
 const commerce = createCommerce({
   gateway: createMollieGateway({ apiKey: process.env.MOLLIE_API_KEY }),
-  db: new SqliteDatabase({ filename: "./shop.sqlite" }),
+  storage: myStorage,
   redirectUrl: "https://shop.example/thanks",
   webhookUrl: "https://shop.example/mollie-webhook",
 });
+```
 
-await commerce.db.skus.save({
+SKUs are written by your catalog, not by this library — it only reads them:
+
+```ts
+await myCatalog.saveSku({
   id: "mug", name: "Enamel mug", kind: "physical", price: money(1250, "EUR"), stock: 10,
 });
 ```
@@ -138,7 +144,7 @@ await commerce.db.skus.save({
 | Option | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `gateway` | yes | — | Payment provider. `createMollieGateway({ apiKey })`, or `new FakePaymentGateway()` in tests. |
-| `db` | yes | — | Storage. `InMemoryDatabase`, `SqliteDatabase`, the Postgres stores, or your own adapter. |
+| `storage` | yes | — | The seven storage handlers you fulfil. See [Persistence](#persistence). |
 | `redirectUrl` | no | — | Where Mollie returns the customer after paying. Mollie requires it for most methods. |
 | `cancelUrl` | no | — | Where Mollie returns a customer who abandons the payment. |
 | `webhookUrl` | no | — | Public URL Mollie posts status changes to. Without it you must poll `syncOrder`. Cannot be `localhost`. |
@@ -255,10 +261,10 @@ Lists orders, oldest-created first.
 | `createdAfter` / `createdBefore` | ISO timestamps; inclusive lower, exclusive upper. |
 | `limit` / `offset` | Paging. |
 
-### `db`
+### `storage`
 
-The database you passed in. Use it for catalog writes (`db.skus.save`,
-`db.skus.delete`), reads (`db.skus.list({ productId })`), and your own queries.
+The handlers you passed in, exposed for wrapping and testing. Catalog writes do
+not go through here — write SKUs with whatever owns your catalog.
 
 ## A real-world shop
 
@@ -270,18 +276,12 @@ anything else.
 
 ```ts
 // shop.ts — wire it up once, import it everywhere.
-import { Pool } from "pg";
 import { createCommerce, createMollieGateway } from "mollie-ecommerce";
-import { applyPostgresSchema, createPostgresDatabase } from "mollie-ecommerce/storage/postgres";
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-await applyPostgresSchema(pool);
-
-export const db = createPostgresDatabase(pool);
+import { storage } from "./storage.ts"; // your seven handlers
 
 export const commerce = createCommerce({
   gateway: createMollieGateway({ apiKey: process.env.MOLLIE_API_KEY! }),
-  db,
+  storage,
   redirectUrl: "https://shop.example/order/complete",
   cancelUrl: "https://shop.example/cart",
   webhookUrl: "https://shop.example/webhooks/mollie",
@@ -448,44 +448,145 @@ export async function reconcile() {
 That is the whole integration: five call sites, and the library owns pricing,
 stock, payment state, and the delivery lifecycle in between.
 
-## Storage
+## Persistence
 
-Storage is behind interfaces, so no database is required. Three adapters ship,
-and a `Database` is just `{ products, orders, transaction() }` — implement it to
-plug in your own.
-
-| Adapter | Import | Use it for |
-| --- | --- | --- |
-| `InMemoryDatabase` | `mollie-ecommerce/storage/memory` | Tests and development. No dependency, nothing persisted. |
-| `SqliteDatabase` | `mollie-ecommerce/storage/sqlite` | Single-node deployments. Uses Bun's built-in `bun:sqlite`. |
-| Postgres stores | `mollie-ecommerce/storage/postgres` | Postgres. You bring the driver — the module imports none. |
-
-See [Using Postgres](#using-postgres) below for the full setup.
-
-Helpers: `SCHEMA_SQL` plus `orderToRow` / `rowToOrder` / `skuToRow` /
-`rowToSku` in `mollie-ecommerce/storage/rows`; `aggregateStock` for the
-repeated-SKU-id rule; the SQLite and Postgres adapters as worked examples;
-and `describeDatabase` in `mollie-ecommerce/storage/conformance` — 18 contract
-tests to point at your own adapter:
+`createCommerce` performs no storage work itself. It opens no transaction,
+issues no query, and knows nothing about tables or locking: it calls **seven
+handlers** you fulfil, and the boundary is the whole contract.
 
 ```ts
-import { describeDatabase } from "mollie-ecommerce/storage/conformance";
+interface CommerceStorage {
+  // reads
+  loadSkus(ids: string[]): Promise<Sku[]>;
+  findOrder(id: string): Promise<Order | null>;
+  findOrderByPaymentId(paymentId: string): Promise<Order | null>;
+  findOrderByIdempotencyKey(key: string): Promise<Order | null>;
+  listOrders(query?: OrderQuery): Promise<Order[]>;
 
-describeDatabase("mysql", () => new MysqlDatabase({ url: process.env.DATABASE_URL }));
+  // writes — each applies everything it is given, or nothing
+  createOrder(input: { order: Order; reserveStock: StockChange[] }): Promise<CreateOrderResult>;
+  mutateOrder(orderId: string, apply: OrderMutator): Promise<Order>;
+}
 ```
 
-No gateway call happens inside a transaction. Checkout is three phases: price
-the cart, reserve stock and insert the order (tx) → `createPayment` (no tx) →
-store the payment id and reconcile (tx). If the gateway call fails, a
-compensating transaction releases the stock and fails the order.
+Two of them write, and that is deliberate: they are the only places the
+commerce layer relies on atomicity.
+
+- **`createOrder`** stores a new order *and* takes its stock together. If the
+  stock isn't there, change nothing and return `{ status: "out_of_stock",
+  shortages }` — don't throw, and don't store the order. The library turns that
+  into `CommerceError("out_of_stock")`.
+- **`mutateOrder`** is how every later change is expressed: read the order,
+  apply the callback, persist the result — plus any `releaseStock` the callback
+  returns, in the same unit. This is where you decide concurrency: hold a lock,
+  or re-read and retry using `order.version`, and throw
+  `CommerceError("version_conflict")` on a lost race rather than overwriting.
+  If the callback throws, nothing may persist.
+
+Everything else — pricing, state machines, stock bookkeeping, payment
+reconciliation, timestamps — stays on the library's side of the line.
+
+### Why no adapters ship
+
+There is no `SqliteDatabase` or `PostgresDatabase` to import. Your orders table
+lives next to your products, customers and carts; it wants your migrations,
+your connection pool, your naming. An adapter that owned it would either fight
+all three or grow configuration until it lost.
+
+So the package ships the contract and one worked implementation you can copy —
+`examples/memory-storage.ts`, two maps in ~140 lines — and this repo's own
+suites run against in-memory, SQLite and Postgres back-ends under `test/` to
+keep the contract honest on real engines.
+
+### Writing yours
+
+Hand the handlers to your ORM, your query builder, or your data service:
+
+```ts
+import { createCommerce, CommerceError } from "mollie-ecommerce";
+
+const commerce = createCommerce({
+  gateway,
+  storage: {
+    loadSkus: (ids) => prisma.sku.findMany({ where: { id: { in: ids } } }),
+
+    async createOrder({ order, reserveStock }) {
+      return prisma.$transaction(async (tx) => {
+        for (const item of reserveStock) {
+          const { count } = await tx.sku.updateMany({
+            where: { id: item.skuId, stock: { gte: item.quantity } },
+            data: { stock: { decrement: item.quantity } },
+          });
+          if (count === 0) {
+            // Abort: the transaction rolls back the earlier decrements.
+            throw new OutOfStock(item);
+          }
+        }
+        return { status: "created", order: await tx.order.create({ data: { ...order, version: 1 } }) };
+      }).catch((error) => {
+        if (error instanceof OutOfStock) return { status: "out_of_stock", shortages: error.shortages };
+        throw error;
+      });
+    },
+
+    async mutateOrder(orderId, apply) {
+      return prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({ where: { id: orderId } });
+        if (!order) throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
+
+        const { releaseStock = [] } = (await apply(order)) ?? {};
+        for (const item of releaseStock) {
+          await tx.sku.update({
+            where: { id: item.skuId },
+            data: { stock: { increment: item.quantity } },
+          });
+        }
+        const { count } = await tx.order.updateMany({
+          where: { id: orderId, version: order.version },     // optimistic lock
+          data: { ...order, version: order.version + 1 },
+        });
+        if (count === 0) throw new CommerceError("version_conflict", "lost the race", { orderId });
+        return { ...order, version: order.version + 1 };
+      });
+    },
+
+    findOrder: (id) => prisma.order.findUnique({ where: { id } }),
+    findOrderByPaymentId: (paymentId) => prisma.order.findFirst({ where: { paymentId } }),
+    findOrderByIdempotencyKey: (key) => prisma.order.findFirst({ where: { idempotencyKey: key } }),
+    listOrders: (query) => prisma.order.findMany(toPrismaWhere(query)),
+  },
+});
+```
+
+Then hold your implementation to the contract:
+
+```ts
+import { describeCommerceStorage } from "mollie-ecommerce/conformance";
+
+describeCommerceStorage("prisma", async () => {
+  await reset();
+  return { storage: myStorage, saveSku: (sku) => prisma.sku.create({ data: sku }) };
+});
+```
+
+Eleven tests cover the ones that are easy to get subtly wrong: shortages that
+must not persist the order, `releaseStock` landing in the same write as the
+mutation, a throwing mutator leaving nothing behind, version bumps, and every
+`listOrders` filter.
+
+The quickest start is to copy
+[`examples/memory-storage.ts`](examples/memory-storage.ts) and replace the maps
+— it is a complete implementation, and this repo's tests run the full lifecycle
+against it, so it cannot drift.
 
 ## How these tables sit next to yours
 
-The library owns exactly two tables. Everything else in your shop stays in
-your schema, and the two halves meet at two deliberately loose joins.
+The library needs exactly two tables' worth of data — it never creates or
+touches them itself. Everything else in your shop stays yours, and the two
+halves meet at two deliberately loose joins.
 
 ```
-  YOUR SCHEMA (you own it)                 THIS LIBRARY (it owns these two)
+  YOUR CATALOG                             WHAT THE HANDLERS PERSIST
   ─────────────────────────                ────────────────────────────────
 
   products                                 skus
@@ -517,10 +618,10 @@ your schema, and the two halves meet at two deliberately loose joins.
                                            └ created_at / updated_at
 ```
 
-**`skus.product_id` → your `products.id`** is the variant join. It is nullable,
-unconstrained, and never interpreted by the library — it only stores, indexes
-and filters on it (`skus.list({ productId })`). Add a real foreign key if you
-want the database to enforce it:
+**`skus.product_id` → your `products.id`** is the variant join. It is nullable
+and never interpreted by the library — `loadSkus` returns it, `listOrders`
+never filters on it, and your own catalog queries do the grouping. Add a real
+foreign key if you want the database to enforce it:
 
 ```sql
 ALTER TABLE skus
@@ -528,9 +629,8 @@ ALTER TABLE skus
   FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE SET NULL;
 ```
 
-The library ships no such constraint, for two reasons: it does not know your
-table's name, and an adapter that assumed one could not be swapped for
-in-memory storage in tests.
+Nothing in the library knows your table's name, so nothing could have created
+that constraint for you — which is the same reason no storage adapters ship.
 
 **`orders.customer_email` → your `customers.email`** is a soft link, by value.
 Orders deliberately do not reference a customer row: an order must stay
@@ -546,183 +646,151 @@ to `skus`.
 
 ### Who writes what
 
-| Table | Written by | Read by |
+| Data | Written by | Read by |
 | --- | --- | --- |
 | your `products`, options, images | you | you |
-| `skus` | you, via `db.skus.save()` | the library (pricing, stock), you |
-| `skus.stock` | **the library** (`reserveStock` / `releaseStock`) — and you, for restocks | both |
-| `orders` and everything in them | the library only | you, via `getOrder` / `findOrders` |
+| `skus` | you — the library has no write handler for them | the library, via `loadSkus` |
+| `skus.stock` | both: you for restocks, the library through `createOrder` / `mutateOrder`'s `releaseStock` | both |
+| `orders` | the library, through your two write handlers | you, via `getOrder` / `findOrders` |
 
 Write `skus` from whatever already owns your catalog — a save hook, a nightly
 sync, an admin action. One row per purchasable variant, prices in minor units.
-Everything else the library does follows from those rows.
+Everything the library does follows from those rows.
 
-Orders are the library's alone. Reading them directly is fine (they are plain
-rows); writing them behind its back breaks the optimistic lock, the stock
-accounting, and the payment reconciliation.
+Orders belong to the library's flow. Reading them directly is fine — they are
+your rows, in your schema. Writing them outside `mutateOrder` breaks the
+optimistic lock, the stock accounting and the payment reconciliation.
 
-## Using Postgres
+## Reference schema
 
-The Postgres adapter imports no driver — you pass in a connection, so there is
-nothing to agree on about pooling, SSL, or connection management.
+Nothing here is shipped or enforced — the library never sees your tables. This
+is the schema its own test suites use, in portable SQL, as a starting point you
+own from the first migration onwards.
 
-### 1. Install a driver
+```sql
+CREATE TABLE IF NOT EXISTS skus (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  currency    TEXT NOT NULL,
+  stock       INTEGER,
+  active      INTEGER NOT NULL DEFAULT 1,
+  product_id  TEXT
+);
 
-```bash
-bun add pg
-bun add -d @types/pg
+CREATE INDEX IF NOT EXISTS skus_product_id ON skus (product_id);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id                    TEXT PRIMARY KEY,
+  version               INTEGER NOT NULL,
+  idempotency_key       TEXT,
+  currency              TEXT NOT NULL,
+  total_cents           INTEGER NOT NULL,
+  amount_refunded_cents INTEGER NOT NULL DEFAULT 0,
+  payment_state         TEXT NOT NULL,
+  payment_id            TEXT,
+  checkout_url          TEXT,
+  delivery_state        TEXT NOT NULL,
+  carrier               TEXT,
+  tracking_code         TEXT,
+  stock_reserved        INTEGER NOT NULL DEFAULT 0,
+  customer_email        TEXT,
+  customer_locale       TEXT,
+  lines                 TEXT NOT NULL,
+  refunds               TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS orders_payment_id ON orders (payment_id);
+CREATE UNIQUE INDEX IF NOT EXISTS orders_idempotency_key ON orders (idempotency_key);
+CREATE INDEX IF NOT EXISTS orders_payment_state ON orders (payment_state);
+CREATE INDEX IF NOT EXISTS orders_delivery_state ON orders (delivery_state);
+CREATE INDEX IF NOT EXISTS orders_customer_email ON orders (customer_email);
+CREATE INDEX IF NOT EXISTS orders_created_at ON orders (created_at);
 ```
 
-Any driver works as long as it exposes `query(sql, params) → { rows }` and
-`connect()`; node-postgres already does. The test suite proves this by running
-the same adapter against [PGlite](https://pglite.dev) through a ~20-line pool
-shim, and a compile-time guard (`test/pg-compat.test.ts`) keeps `pg`'s own
-types assignable to the ports.
-
-### 2. Create the schema
-
-```ts
-import { Pool } from "pg";
-import { applyPostgresSchema } from "mollie-ecommerce/storage/postgres";
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-await applyPostgresSchema(pool);
-```
-
-`applyPostgresSchema` runs `SCHEMA_SQL` — two tables and six indexes, all
-`IF NOT EXISTS`, so it is safe to call on every boot. It only ever adds; it
-never alters or drops, so it is not a migration tool.
-
-If you already run migrations (Atlas, Drizzle, dbmate, Flyway, …), skip it and
-paste `SCHEMA_SQL` into your first migration instead:
-
-```ts
-import { SCHEMA_SQL } from "mollie-ecommerce/storage/rows";
-console.log(SCHEMA_SQL); // → paste into 0001_mollie_ecommerce.sql
-```
-
-### 3. Wire it up
-
-```ts
-import { createCommerce, createMollieGateway } from "mollie-ecommerce";
-import { createPostgresDatabase } from "mollie-ecommerce/storage/postgres";
-
-const commerce = createCommerce({
-  gateway: createMollieGateway({ apiKey: process.env.MOLLIE_API_KEY! }),
-  db: createPostgresDatabase(pool),
-  redirectUrl: "https://shop.example/order/complete",
-  webhookUrl: "https://shop.example/webhooks/mollie",
-});
-```
-
-That is the whole integration. For hosted Postgres, configure the driver as
-that provider documents — the adapter never inspects your connection:
-
-```ts
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: true },   // most managed providers
-  max: 10,                             // see the note on pool sizing below
-});
-```
-
-### How transactions use the pool
-
-`createPostgresDatabase(pool).transaction(run)` checks out **one** connection
-with `connect()`, issues `BEGIN`, runs your work against stores bound to that
-connection, then `COMMIT` — or `ROLLBACK` if anything throws — and always
-releases the connection in a `finally`.
-
-Two consequences worth knowing:
-
-- **A nested `transaction()` joins the outer one** rather than taking a second
-  connection, which would block on the rows the first one holds.
-- **Each in-flight checkout holds one connection** for the duration of its
-  transactions — not for the Mollie API call, which deliberately happens
-  outside any transaction. Size `max` for your concurrency, and remember that
-  serverless functions each get their own pool.
-
-Transaction-mode poolers (PgBouncer, Supabase's pooler, RDS Proxy) are fine:
-the adapter sets no session state — no `SET`, no `LISTEN`, no cursors, no
-advisory locks — and every transaction is a plain `BEGIN`/`COMMIT` on one
-connection.
-
-### What the tables look like
-
-Both SQL adapters share `SCHEMA_SQL`, so the column types are chosen for
-portability rather than for Postgres' richest options:
+Adjust types for your engine (`TEXT` → `VARCHAR`/`JSONB`, `INTEGER` →
+`BIGINT`). The choices that matter:
 
 | Concern | Column(s) | Why |
 | --- | --- | --- |
-| Money | `total_cents INTEGER`, `amount_refunded_cents`, `price_cents`, plus one `currency TEXT` per row | Integer minor units. No floats anywhere near money, and one currency per order is enforced at checkout. |
-| Timestamps | `created_at`, `updated_at` as `TEXT` | ISO-8601 UTC strings, as produced by `toISOString()`. Lexicographic order matches chronological order, so the `created_at` index and the `createdAfter`/`createdBefore` filters work — but only because every writer uses that one format. |
-| Booleans | `active`, `stock_reserved` as `INTEGER` 0/1 | Portable across engines. The mappers normalize them back to `boolean`. |
-| Collections | `lines`, `refunds` as `TEXT` holding JSON | Mapped with `JSON.parse`/`JSON.stringify`. |
-| Unlimited stock | `stock INTEGER NULL` | `NULL` means unlimited, and the reservation SQL skips those rows. |
-| Variant grouping | `skus.product_id TEXT NULL`, indexed | Your product id. The library stores and filters on it but never interprets it. |
+| Money | `*_cents INTEGER` plus one `currency TEXT` per row | Integer minor units. No floats near money; one currency per order is enforced at checkout. |
+| Timestamps | `created_at`, `updated_at` as `TEXT` | ISO-8601 UTC, as `toISOString()` produces. Lexicographic order matches chronological, so the index and the `createdAfter`/`createdBefore` filters work — as long as every writer uses that one format. |
+| Booleans | `active`, `stock_reserved` as `INTEGER` 0/1 | Portable; map them back to `boolean` when you read. |
+| Collections | `lines`, `refunds` as JSON in `TEXT` | Snapshots, never queried by the library. Use `jsonb` if you want to query inside them — then skip `JSON.parse`, since most drivers hand back a parsed object. |
+| Unlimited stock | `stock INTEGER NULL` | `NULL` means untracked, and the reservation skips those rows. |
+| Variant grouping | `skus.product_id TEXT NULL`, indexed | Your product id, stored and filtered but never interpreted. |
 
-If you want to query inside the JSON, switch those columns to `jsonb` — but
-then adapt `rowToOrder`, because node-postgres hands back a parsed object and
-`JSON.parse` would throw on it. Likewise, keep the integer columns `INTEGER`
-rather than `BIGINT`: node-postgres returns `bigint` as a **string** to avoid
-precision loss, which would break the money mapping.
+The two unique indexes are load-bearing: `orders_payment_id` is what makes
+webhook lookups unambiguous, and `orders_idempotency_key` is what makes
+checkout replay-safe. Postgres and SQLite both allow many `NULL`s there, so
+orders without a payment id coexist happily.
 
-The unique indexes on `payment_id` and `idempotency_key` are what make webhook
-lookups and idempotent checkout correct. Postgres permits many `NULL`s in a
-unique index, so orders without a payment id coexist happily.
+Keep the integer columns `INTEGER` rather than `BIGINT` if you use
+node-postgres: it returns `bigint` as a **string** to avoid precision loss,
+which would quietly break the money mapping.
 
-### Verifying your setup
+### Reserving stock in one statement
 
-Point the conformance suite at your live database to confirm the schema, the
-driver, and your pool behave as the library expects:
+`createOrder` has to take stock and store the order together, or neither. In
+Postgres that needs no application-level locking — a data-modifying CTE guarded
+on the shortage set does it in a single statement:
 
-```ts
-// postgres.conformance.test.ts
-import { Pool } from "pg";
-import { describeDatabase } from "mollie-ecommerce/storage/conformance";
-import { applyPostgresSchema, createPostgresDatabase } from "mollie-ecommerce/storage/postgres";
-
-const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-await applyPostgresSchema(pool);
-
-describeDatabase("my-postgres", async () => {
-  await pool.query("TRUNCATE skus, orders");
-  return createPostgresDatabase(pool);
-});
+```sql
+WITH wanted AS (
+  SELECT sku_id, quantity FROM unnest($1::text[], $2::int[]) AS t(sku_id, quantity)
+),
+shortage AS (
+  SELECT w.sku_id, w.quantity, s.stock, s.id IS NULL AS missing
+  FROM wanted w LEFT JOIN skus s ON s.id = w.sku_id
+  WHERE s.id IS NULL OR (s.stock IS NOT NULL AND s.stock < w.quantity)
+),
+reserved AS (
+  UPDATE skus s SET stock = s.stock - w.quantity
+  FROM wanted w
+  WHERE s.id = w.sku_id
+    AND s.stock IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM shortage)   -- all or nothing
+  RETURNING s.id
+)
+SELECT sku_id, quantity, stock, missing FROM shortage ORDER BY sku_id;
 ```
 
-Point it at a throwaway database — it truncates both tables between tests.
+Rows returned are your shortages; none means the reservation took. Aggregate
+repeated SKU ids first (`aggregateStock`, exported) or two lines of the same
+SKU will each pass the check and together oversell.
 
 ### Operating notes
 
 - **`version_conflict` is normal under load.** Two writers touched one order and
-  the slower one was rejected rather than allowed to overwrite. Re-read the
-  order and retry; for webhooks, retrying is usually enough since Mollie will
-  redeliver anyway.
-- **`duplicate_order` on insert** means `payment_id` or `idempotency_key`
-  collided. Two orders cannot share a Mollie payment, and a repeated
-  idempotency key is handled by `checkout` before it reaches the database.
-- **`relation "skus" does not exist`** means the schema was never applied —
-  call `applyPostgresSchema` or run your migration.
-- **Abandoned carts hold stock** until their payment expires. Mollie expires
-  them and calls your webhook, but a periodic `syncOrder` pass frees stock
-  sooner — see [Reconciliation](#5-reconciliation-the-part-most-shops-forget).
+  the slower one was rejected rather than allowed to overwrite. Re-read and
+  retry; for webhooks, retrying is usually enough since Mollie redelivers.
+- **Abandoned carts hold stock** until their payment expires. Mollie expires it
+  and calls your webhook, but a periodic `syncOrder` pass frees stock sooner —
+  see [Reconciliation](#5-reconciliation-the-part-most-shops-forget).
+- **No gateway call belongs inside a write handler.** Checkout is three phases:
+  price the cart from `loadSkus`, then `createOrder` (order + stock, atomic) →
+  `createPayment` (nothing held open) → `mutateOrder` to store the payment id
+  and reconcile. If the gateway call fails, a compensating `mutateOrder`
+  releases the stock and fails the order.
 
 ## Versioning
 
 [Semantic versioning](https://semver.org). The public API is everything
-exported from `mollie-ecommerce` and its `storage/*` subpaths — the `Commerce`
-methods, the model types, `Money` helpers, the storage ports, and
-`CommerceError` codes. Internal helpers and the shape of `details` on errors
+exported from `mollie-ecommerce` and `mollie-ecommerce/conformance` — the
+`Commerce` methods, the model types, `Money` helpers, the `CommerceStorage`
+handler contract, and `CommerceError` codes. Internal helpers and the shape of `details` on errors
 are not covered.
 
 **Pre-1.0:** breaking changes go in the minor slot (`0.1.x` → `0.2.0`), so pin
 the minor if you need stability. Every release is described in
 [CHANGELOG.md](CHANGELOG.md).
 
-Adding a storage port method is a breaking change for custom adapters, and will
-say so in the changelog — `describeDatabase` is how you find out whether yours
-still conforms.
+Adding a handler, or tightening one's contract, is a breaking change for every
+implementation and will say so in the changelog — `describeCommerceStorage` is
+how you find out whether yours still conforms.
 
 ## Behavior worth knowing
 

@@ -1,4 +1,4 @@
-import type { StockChange } from "../ports.ts";
+import type { StockChange } from "./ports.ts";
 
 /**
  * Collapses repeated SKU ids into one change each.
