@@ -17,15 +17,18 @@ you. Call the methods from whatever you already run.
 bun add mollie-ecommerce
 ```
 
-Requires [Bun](https://bun.com) 1.2+. The package ships TypeScript sources and
-Bun resolves them directly, so there is no build step — and no transpiled
-output for Node to consume. Two runtime dependencies: the Mollie SDK and
-[zod](https://zod.dev).
+Ships as ESM with type declarations, so Node 20+, Bun, Deno and bundlers all
+work. Two runtime dependencies: the Mollie SDK and [zod](https://zod.dev).
+
+One exception: `mollie-ecommerce/conformance` — the contract test suite for
+your storage — builds on `bun:test`, so that entry point needs
+[Bun](https://bun.com).
 
 ```bash
 # Working on the library itself
 bun install
 bun run check     # typecheck + 161 tests
+bun run build     # bundle dist/ with tsdown
 bun run example   # the full lifecycle, no Mollie account needed
 ```
 
@@ -875,9 +878,11 @@ mutation, a throwing mutator leaving nothing behind, version bumps, and every
 `listOrders` filter.
 
 The quickest start is to copy
-[`examples/memory-storage.ts`](examples/memory-storage.ts) and replace the maps
-— it is a complete implementation, and this repo's tests run the full lifecycle
-against it, so it cannot drift.
+[`examples/memory-storage.ts`](https://github.com/alexandre-dos-reis/mollie-ecommerce/blob/main/examples/memory-storage.ts)
+from the repository and replace the maps — it is a complete implementation, and
+this repo's tests run the full lifecycle against it, so it cannot drift. It is
+deliberately not part of the published package: storage is yours, and an
+in-memory one is a starting point to own rather than a dependency to carry.
 
 ## How these tables sit next to yours
 

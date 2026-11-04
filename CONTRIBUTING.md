@@ -8,11 +8,13 @@ useful contributions are bug fixes, storage adapters, and documentation.
 ```bash
 bun install
 bun run check     # typecheck + tests
+bun run build     # bundle dist/ with tsdown, as published
 bun run example   # the quickstart, against the fake gateway
 ```
 
-There is nothing to build: the package ships TypeScript sources and targets
-Bun, which resolves them directly.
+Development runs straight off the TypeScript in `src/`; `dist/` only exists to
+be published, and `prepublishOnly` rebuilds it, so there is no need to keep it
+up to date while working.
 
 ## Scope
 
@@ -44,6 +46,7 @@ PR so we can check the fit first.
 | `src/mollie.ts`, `src/fake-gateway.ts` | the `PaymentGateway` implementations |
 | `examples/memory-storage.ts` | a complete handler implementation, published for copying |
 | `test/storage/` | in-memory, SQLite and Postgres fixtures — **not shipped** |
+| `tsdown.config.ts` | the two published entry points, and what stays external |
 
 ## Where the boundary is
 
@@ -121,13 +124,49 @@ Every property of the object returned by `createCommerce` is documented in both
 JSDoc and the README, including its arguments and the error codes it throws.
 Keep both in step, and add a `## Unreleased` entry to `CHANGELOG.md`.
 
+## Changesets
+
+Any change a user would notice needs a changeset — a short file recording how
+the version should move and why:
+
+```bash
+bun run changeset   # pick patch/minor, write one or two sentences
+```
+
+Pre-1.0: **minor** for anything that changes the public API, **patch** for
+fixes and docs. Nothing to edit in `CHANGELOG.md` or `package.json` by hand;
+both are written at release time. For a change nobody needs to read about
+(refactors, CI, internal tests), `bunx changeset add --empty` records that
+choice explicitly.
+
+The prompt needs a terminal. Writing the file yourself is equally valid:
+
+```md
+---
+"mollie-ecommerce": patch
+---
+
+What changed, and why it matters to someone using the library.
+```
+
 ## Releasing
 
 Maintainers, from a green `main`:
 
-1. Move the `## Unreleased` entries under a new `## x.y.z — YYYY-MM-DD` heading.
-2. Bump `version` in `package.json` following [semver](https://semver.org) —
-   while pre-1.0, breaking changes go in the **minor** slot.
-3. Commit as `release: vx.y.z`, then `git tag -a vx.y.z -m "vx.y.z"`.
-4. `git push origin main --follow-tags`, and publish the GitHub release with the
-   changelog section as its notes.
+```bash
+bun run version   # consume the changesets: bump package.json, write CHANGELOG.md
+git commit -am "release: v$(node -p "require('./package.json').version")"
+bun run release   # typecheck + tests, then publish to npm and tag the commit
+git push --follow-tags
+```
+
+`bun run release` refuses to publish if `bun run check` fails, and
+`changeset publish` creates the `vX.Y.Z` tag for you. Finish by publishing the
+GitHub release with that version's changelog section as its notes:
+
+```bash
+gh release create "v$(node -p "require('./package.json').version")" --latest --generate-notes
+```
+
+npm auth comes from your own npm login; nothing in CI publishes, and there is
+no token stored in the repo.

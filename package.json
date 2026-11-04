@@ -1,7 +1,7 @@
 {
   "name": "mollie-ecommerce",
-  "version": "0.4.0",
-  "description": "A SKU, order and delivery lifecycle layer over Mollie — the minimum an ecommerce flow needs.",
+  "version": "0.5.0",
+  "description": "A SKU, order and delivery lifecycle layer over Mollie \u2014 the minimum an ecommerce flow needs.",
   "keywords": [
     "mollie",
     "ecommerce",
@@ -27,27 +27,35 @@
   },
   "type": "module",
   "sideEffects": false,
-  "module": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./conformance": "./src/conformance.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.ts",
+      "default": "./dist/conformance.js"
+    }
   },
   "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "examples/memory-storage.ts",
+    "dist",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
   "engines": {
-    "bun": ">=1.2.0"
+    "node": ">=20"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "example": "bun run examples/quickstart.ts"
+    "build": "tsdown",
+    "example": "bun run examples/quickstart.ts",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "bun run check && changeset publish",
+    "prepublishOnly": "bun run check && bun run build"
   },
   "dependencies": {
     "mollie-api-typescript": "^1.12.44",
@@ -61,11 +69,17 @@
     "@types/bun": "latest",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1",
+    "tsdown": "^0.23.5",
     "typescript": "7.0.2"
   },
   "peerDependenciesMeta": {
     "typescript": {
       "optional": true
     }
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
 }
