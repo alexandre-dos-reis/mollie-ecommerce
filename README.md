@@ -25,7 +25,7 @@ output for Node to consume. Two runtime dependencies: the Mollie SDK and
 ```bash
 # Working on the library itself
 bun install
-bun run check     # typecheck + 166 tests
+bun run check     # typecheck + 161 tests
 bun run example   # the full lifecycle, no Mollie account needed
 ```
 

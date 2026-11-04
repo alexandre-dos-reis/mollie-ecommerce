@@ -105,8 +105,3 @@ test("a dead payment releases stock through the mutation handler", async () => {
   await commerce.syncOrder(order.id);
   expect(skus.get("mug")?.stock).toBe(10);
 });
-
-test("storage is required", () => {
-  // @ts-expect-error — `storage` has no default: persistence is never implicit.
-  expect(() => createCommerce({ gateway })).toBeDefined();
-});

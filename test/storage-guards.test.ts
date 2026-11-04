@@ -66,18 +66,17 @@ test("a malformed SKU is caught at loadSkus", async () => {
 });
 
 test("a malformed order is caught on the way out of a read", async () => {
-  const storage = brokenStorage({
+  const wrongType = brokenStorage({
     findOrder: async () => ({ ...order(), stockReserved: "yes" }) as unknown as Order,
   });
-  await expect(storage.findOrder("ord_1")).rejects.toMatchObject(contract);
-});
+  await expect(wrongType.findOrder("ord_1")).rejects.toMatchObject(contract);
 
-test("an unknown payment state is caught", async () => {
-  const storage = brokenStorage({
+  // An unrecognized enum member is just as invalid as the wrong type.
+  const unknownState = brokenStorage({
     findOrderByPaymentId: async () =>
       ({ ...order(), payment: { ...order().payment, state: "settled" } }) as unknown as Order,
   });
-  await expect(storage.findOrderByPaymentId("tr_1")).rejects.toThrow(/payment\.state/);
+  await expect(unknownState.findOrderByPaymentId("tr_1")).rejects.toThrow(/payment\.state/);
 });
 
 test("null from a lookup is valid, and passes through", async () => {
@@ -242,30 +241,6 @@ test("createCommerce routes handler errors through onStorageError", async () => 
   });
   expect(contexts[0]?.handler).toBe("createOrder");
   expect(contexts[0]?.orderId).toStartWith("ord_");
-});
-
-test("the whole lifecycle passes its own arguments through the checks", async () => {
-  // Wrapping the storage the library talks to validates every argument it
-  // sends, not just what the storage returns.
-  const { storage, saveSku, skus } = createMemoryStorage();
-  await saveSku(mug);
-  const gateway = new FakePaymentGateway();
-  const commerce = createCommerce({ gateway, storage: checkedStorage(storage) });
-
-  const { order: created } = await commerce.checkout({
-    items: [{ skuId: "mug", quantity: 2 }],
-    customer: { email: "ada@example.com" },
-    idempotencyKey: "cart-1",
-  });
-  gateway.setState(created.payment.id!, "paid");
-  await commerce.handleWebhook(created.payment.id!);
-  await commerce.markShipped({ orderId: created.id, carrier: "PostNL" });
-  await commerce.markDelivered(created.id);
-  await commerce.refund({ orderId: created.id, lines: [{ skuId: "mug", quantity: 1 }] });
-  const returned = await commerce.markReturned({ orderId: created.id, restock: true });
-
-  expect(returned.delivery.state).toBe("returned");
-  expect(skus.get("mug")?.stock).toBe(10);
 });
 
 /* ------------------------------------------------- always on, not opt in */

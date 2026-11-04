@@ -50,25 +50,22 @@ test("createOrder may throw outOfStock instead of returning it", async () => {
 });
 
 test("a thrown CommerceError reaches the caller with its code intact", async () => {
-  const commerce = commerceWith({
+  const conflicted = commerceWith({
     async mutateOrder(orderId) {
       throw storageError.versionConflict(orderId, 3, 4);
     },
   });
-
-  await expect(commerce.checkout({ items: [{ skuId: "mug" }] })).rejects.toMatchObject({
+  await expect(conflicted.checkout({ items: [{ skuId: "mug" }] })).rejects.toMatchObject({
     code: "version_conflict",
     details: { expected: 3, actual: 4 },
   });
-});
 
-test("mutateOrder throwing orderNotFound surfaces as order_not_found", async () => {
-  const commerce = commerceWith({
+  const missing = commerceWith({
     async mutateOrder(orderId) {
       throw storageError.orderNotFound(orderId);
     },
   });
-  await expect(commerce.checkout({ items: [{ skuId: "mug" }] })).rejects.toMatchObject({
+  await expect(missing.checkout({ items: [{ skuId: "mug" }] })).rejects.toMatchObject({
     code: "order_not_found",
   });
 });

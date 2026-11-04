@@ -89,6 +89,10 @@ list them.
   its contract test there — that is what keeps adapters interchangeable.
 - Prefer `FakePaymentGateway` over mocks, and never hit the real Mollie API in
   tests.
+- **A test must be able to fail.** `expect(typeof x).toBe("function")` and
+  `expect(fn).toBeDefined()` pass whatever the code does; if what you mean is a
+  type guarantee, write it as an assignment in a non-test file (see
+  `test/pg-compat.ts`) and let `tsc` enforce it.
 
 ## Writing a storage implementation
 
