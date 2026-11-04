@@ -25,7 +25,7 @@ output for Node to consume. Two runtime dependencies: the Mollie SDK and
 ```bash
 # Working on the library itself
 bun install
-bun run check     # typecheck + 139 tests
+bun run check     # typecheck + 166 tests
 bun run example   # the full lifecycle, no Mollie account needed
 ```
 
@@ -279,6 +279,7 @@ anything else.
 ```ts
 // shop.ts — wire it up once, import it everywhere.
 import { createCommerce, createMollieGateway } from "mollie-ecommerce";
+import { log } from "./log.ts";
 import { storage } from "./storage.ts"; // your seven handlers
 
 export const commerce = createCommerce({
@@ -287,6 +288,11 @@ export const commerce = createCommerce({
   redirectUrl: "https://shop.example/order/complete",
   cancelUrl: "https://shop.example/cart",
   webhookUrl: "https://shop.example/webhooks/mollie",
+
+  // One place to see anything your storage throws.
+  onStorageError: (error, { handler, orderId }) => {
+    log.error({ err: error, handler, orderId }, "storage failed");
+  },
 });
 ```
 
@@ -475,18 +481,24 @@ Two of them write, and that is deliberate: they are the only places the
 commerce layer relies on atomicity.
 
 - **`createOrder`** stores a new order *and* takes its stock together. If the
-  stock isn't there, change nothing and return `{ status: "out_of_stock",
-  shortages }` — don't throw, and don't store the order. The library turns that
-  into `CommerceError("out_of_stock")`.
+  stock isn't there, change nothing and say so — either return
+  `{ status: "out_of_stock", shortages }` or throw
+  `storageError.outOfStock(shortages)`. Both reach the caller as
+  `CommerceError("out_of_stock")`; see
+  [Throwing from a handler](#throwing-from-a-handler).
 - **`mutateOrder`** is how every later change is expressed: read the order,
   apply the callback, persist the result — plus any `releaseStock` the callback
   returns, in the same unit. This is where you decide concurrency: hold a lock,
   or re-read and retry using `order.version`, and throw
-  `CommerceError("version_conflict")` on a lost race rather than overwriting.
-  If the callback throws, nothing may persist.
+  `storageError.versionConflict()` on a lost race rather than overwriting. If
+  the callback throws, nothing may persist.
 
 Everything else — pricing, state machines, stock bookkeeping, payment
-reconciliation, timestamps — stays on the library's side of the line.
+reconciliation, timestamps — stays on the library's side of the line. And
+because the boundary *is* the contract, it is enforced: every value crossing it
+is validated at runtime, so an implementation that drifts fails immediately
+rather than quietly. See
+[The contract is checked at runtime](#the-contract-is-checked-at-runtime).
 
 ### What goes in each handler
 
@@ -951,9 +963,10 @@ optimistic lock, the stock accounting and the payment reconciliation.
 
 ## Reference schema
 
-Nothing here is shipped or enforced — the library never sees your tables. This
-is the schema its own test suites use, in portable SQL, as a starting point you
-own from the first migration onwards.
+No part of this is shipped, and the library never sees your tables — what it
+enforces is the shape of the data your handlers return, not where you keep it.
+This is the schema its own test suites use, in portable SQL, as a starting
+point you own from the first migration onwards.
 
 ```sql
 CREATE TABLE IF NOT EXISTS skus (

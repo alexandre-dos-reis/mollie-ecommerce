@@ -79,7 +79,8 @@ is yours — your migrations, your pool, your naming.
 
 ### Changed
 
-- New dependency: `zod` (^4), for the schemas and `checkedStorage`.
+- New dependency: `zod` (^4), for the exported schemas and the internal
+  contract checks.
 - The standalone `versionConflict()` helper is now `storageError.versionConflict`.
 
 ### Removed

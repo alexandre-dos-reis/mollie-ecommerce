@@ -33,6 +33,18 @@ A feature that is really "my shop needs X" rather than "this lifecycle is
 wrong" probably belongs in your application layer. Open an issue before a large
 PR so we can check the fit first.
 
+## Layout
+
+| Path | What lives there |
+| --- | --- |
+| `src/commerce.ts` | the lifecycle: checkout, reconciliation, refunds, delivery |
+| `src/storage-handlers.ts` | the `CommerceStorage` contract — the only way the library persists anything |
+| `src/schemas.ts`, `src/storage-guards.ts` | the runtime enforcement of that contract |
+| `src/conformance.ts` | `describeCommerceStorage`, published at `mollie-ecommerce/conformance` |
+| `src/mollie.ts`, `src/fake-gateway.ts` | the `PaymentGateway` implementations |
+| `examples/memory-storage.ts` | a complete handler implementation, published for copying |
+| `test/storage/` | in-memory, SQLite and Postgres fixtures — **not shipped** |
+
 ## Where the boundary is
 
 `createCommerce` must not touch storage. It calls the `CommerceStorage`
