@@ -18,8 +18,9 @@ knowing about when you review your own integration:
 
 - **Webhook payloads are never trusted.** `handleWebhook(paymentId)` uses the
   id only as a lookup key and re-reads the payment from Mollie, so a forged
-  webhook body cannot mark an order paid. Verifying webhook authenticity at
-  your HTTP edge is still worthwhile, but it is not what protects order state.
+  webhook body cannot mark an order paid. Mollie does not sign its webhooks, so
+  `createWebhookHandler` offers nothing to verify; restricting the route at your
+  HTTP edge is still worthwhile, but it is not what protects order state.
 - **Refunds are bounded** by `total − amountRefunded`, server-side, so a
   tampered client cannot over-refund.
 - **Stock reservation and order writes are atomic by contract.** `createOrder`

@@ -25,9 +25,13 @@ minimum an ecommerce flow needs on top of Mollie. Deliberately out of scope:
   descriptions, categories, VAT breakdowns, translations. Keep them in your own
   tables and link them with `Sku.productId`; see "How these tables sit next to
   yours" in the README.
-- **HTTP, frameworks, and webhook transport.** `handleWebhook(paymentId)` is
-  the commerce operation; routing, signature checks, and status codes belong in
-  your application.
+- **HTTP routing and frameworks.** `handleWebhook(paymentId)` is the commerce
+  operation and routing is yours. The one exception is the Mollie webhook
+  *protocol*, which is identical for every consumer: `mollie-ecommerce/http`
+  owns the form body, the status codes Mollie acts on, and the
+  duplicate-delivery retry. Logic belongs there only if every integrator would
+  otherwise write it the same way and get it wrong; anything shop-specific goes
+  through its `onOrder`/`onError` hooks.
 - **Mollie features with no bearing on this lifecycle** — subscriptions,
   payment links, settlements, Connect. Use the Mollie SDK directly for those.
 
@@ -42,6 +46,7 @@ PR so we can check the fit first.
 | `src/commerce.ts` | the lifecycle: checkout, reconciliation, refunds, delivery |
 | `src/storage-handlers.ts` | the `CommerceStorage` contract — the only way the library persists anything |
 | `src/schemas.ts`, `src/storage-guards.ts` | the runtime enforcement of that contract |
+| `src/http.ts` | `createWebhookHandler`, published at `mollie-ecommerce/http` |
 | `src/conformance.ts` | `describeCommerceStorage`, published at `mollie-ecommerce/conformance` |
 | `src/mollie.ts`, `src/fake-gateway.ts` | the `PaymentGateway` implementations |
 | `examples/memory-storage.ts` | a complete handler implementation, published for copying |
