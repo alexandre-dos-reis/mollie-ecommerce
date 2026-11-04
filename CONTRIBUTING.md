@@ -159,16 +159,10 @@ Releases are automated, and the only manual step is merging a PR.
 3. **A release PR appears** (or updates), titled `release: version packages`.
    It applies the pending changesets: one version bump, one changelog section.
 4. **You merge it.** CI runs again on `main`, and this time there are no
-   changesets left, so the workflow publishes to npm and pushes the `vX.Y.Z`
-   tag.
+   changesets left, so the workflow publishes to npm, pushes the `vX.Y.Z` tag,
+   and writes the GitHub release from that version's changelog section.
 
-Then write up the GitHub release from that version's changelog section:
-
-```bash
-gh release create "v$(node -p "require('./package.json').version")" --latest --generate-notes
-```
-
-The release PR itself shows no checks, because commits made with
+Nothing to run by hand. The release PR itself shows no checks, because commits made with
 `GITHUB_TOKEN` do not trigger workflows. That is fine: its contents are a
 version bump and a changelog, and CI runs on `main` both before the PR is
 created and after it is merged.

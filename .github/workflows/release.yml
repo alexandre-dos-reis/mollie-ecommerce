@@ -1,24 +1,29 @@
 name: Release
 
-# Only ever runs for main, and only after CI has gone green there: a release
-# is the one thing that must not race ahead of its own test run.
+# Only ever runs for main, and only after CI has gone green there: a release is
+# the one thing that must not race ahead of its own test run.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
 
-# One release at a time — two runs publishing the same version would race.
-concurrency: release
+concurrency:
+  group: release
+  cancel-in-progress: false # never abandon a publish half-done
 
 permissions:
-  contents: write # push the version branch, and the tag when publishing
+  contents: write # push the version branch, the tag and the GitHub release
   pull-requests: write # open and update the release PR
   id-token: write # npm trusted publishing, and provenance
 
 jobs:
   release:
     name: version PR or publish
+    # `success` is the whole condition on purpose. CI here has no path filters
+    # and never skips, so the commit that merges the release PR gets a real run;
+    # repos whose CI skips that commit need to allow `skipped` as well, or the
+    # bump merges and never ships.
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -28,12 +33,15 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0 # changesets compares against the full history
 
+      # Pinned: a release should not change behaviour because a runner picked up
+      # a new Bun this morning.
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
 
-      # npm does the publishing; this writes the .npmrc that authenticates it.
-      - uses: actions/setup-node@v4
+      # npm does the publishing; registry-url writes the .npmrc that
+      # authenticates it from NODE_AUTH_TOKEN.
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -42,14 +50,17 @@ jobs:
         run: bun install --frozen-lockfile
 
       # With pending changesets: opens or updates a PR that applies them.
-      # With none (that PR was merged): publishes and tags. `prepublishOnly`
-      # re-runs typecheck, tests and the build before anything leaves the box.
-      - uses: changesets/action@v1
+      # With none (that PR was merged): publishes, tags, and writes the GitHub
+      # release. `prepublishOnly` re-runs typecheck, tests and the build before
+      # anything leaves the runner.
+      - uses: changesets/action@v2
         with:
-          version: bun run version
-          publish: bun run release:ci
-          commit: "release: version packages"
-          title: "release: version packages"
+          version-script: bun run version
+          publish-script: bun run release:ci
+          commit-message: "release: version packages"
+          pr-title: "release: version packages"
+          pr-base-branch: main
+          create-github-releases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
