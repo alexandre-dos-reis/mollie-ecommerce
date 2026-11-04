@@ -1,5 +1,5 @@
 import { Database as Sqlite } from "bun:sqlite";
-import { CommerceError, versionConflict } from "../../src/errors.ts";
+import { CommerceError, storageError } from "../../src/errors.ts";
 import type {
   Database,
   OrderQuery,
@@ -234,7 +234,7 @@ export class SqliteOrderStore implements OrderStore {
       if (!current) {
         throw new CommerceError("order_not_found", `no order ${order.id}`, { orderId: order.id });
       }
-      throw versionConflict(order.id, order.version, current.version);
+      throw storageError.versionConflict(order.id, order.version, current.version);
     }
     return stored;
   }

@@ -1,4 +1,4 @@
-import { CommerceError, versionConflict } from "../../src/errors.ts";
+import { CommerceError, storageError } from "../../src/errors.ts";
 import type {
   Database,
   OrderQuery,
@@ -261,7 +261,7 @@ export class PostgresOrderStore implements OrderStore {
       if (!current[0]) {
         throw new CommerceError("order_not_found", `no order ${order.id}`, { orderId: order.id });
       }
-      throw versionConflict(order.id, order.version, current[0].version);
+      throw storageError.versionConflict(order.id, order.version, current[0].version);
     }
     return stored;
   }

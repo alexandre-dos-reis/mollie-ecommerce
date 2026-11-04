@@ -126,7 +126,3 @@ export const storageError = {
   },
 };
 
-/** @deprecated Use `storageError.versionConflict`. */
-export function versionConflict(orderId: string, expected: number, actual: number): CommerceError {
-  return storageError.versionConflict(orderId, expected, actual);
-}

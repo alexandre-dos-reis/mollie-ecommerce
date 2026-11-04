@@ -28,11 +28,10 @@ const CHECKED = Symbol.for("mollie-ecommerce.checkedStorage");
  * against the documented contract, and a violation fails loudly at the call
  * site instead of corrupting an order three steps later.
  *
- * **`createCommerce` applies this to your storage automatically** — the
- * contract is always enforced, not something to remember. You only need to
- * call it yourself to check a storage outside the commerce layer, such as in
- * your own tests. Wrapping an already-wrapped storage returns it unchanged, so
- * doing both costs nothing.
+ * **Internal.** `createCommerce` applies this to every storage it is given, so
+ * the contract is always enforced and there is nothing for a consumer to
+ * switch on or import. `describeCommerceStorage` applies it too; wrapping an
+ * already-wrapped storage returns it unchanged, so composing them is free.
  *
  * It checks shapes with {@link ../schemas.ts zod schemas} and also the things
  * a schema cannot express: that `loadSkus` returns only SKUs that were asked
@@ -227,8 +226,8 @@ export type StorageErrorHandler = (
 ) => CommerceError | void | Promise<CommerceError | void>;
 
 /**
- * Routes every error thrown by a storage handler through `onError` first.
- * `createCommerce({ onStorageError })` wraps your storage with this.
+ * Internal. Routes every error thrown by a storage handler through `onError`
+ * first; `createCommerce({ onStorageError })` is the public way to reach it.
  */
 export function withStorageErrorHandler(
   storage: CommerceStorage,

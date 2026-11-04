@@ -651,15 +651,9 @@ original object, never zod's parsed copy, so nothing is stripped or coerced),
 and errors your handlers throw pass through untouched — only a thrown
 `out_of_stock` is inspected, since its shortages are part of the contract.
 
-`checkedStorage` is exported if you want to check a storage outside the
-commerce layer, say in your own tests. Wrapping an already-wrapped storage
-returns it unchanged, so it is safe to use alongside `createCommerce`:
-
-```ts
-import { checkedStorage } from "mollie-ecommerce";
-
-const storage = checkedStorage(myStorage); // same checks, used directly
-```
+There is nothing to import or configure: the checks are part of
+`createCommerce`, and `describeCommerceStorage` runs the same ones, so what
+conformance verifies is exactly what production enforces.
 
 The schemas are exported too — `OrderSchema`, `SkuSchema`, `MoneySchema` and
 the rest — which is handy on your side of the line for validating rows you

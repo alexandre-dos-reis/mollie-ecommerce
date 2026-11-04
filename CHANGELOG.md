@@ -40,9 +40,9 @@ is yours — your migrations, your pool, your naming.
   returning the order it was given with a version, and `mutateOrder` calling
   the mutator and returning a *higher* version — a silent lost write is
   otherwise invisible. Validated values pass through unchanged, never zod's
-  parsed copy. `checkedStorage` is exported for checking a storage outside the
-  commerce layer and is idempotent, so wrapping twice costs nothing;
-  `describeCommerceStorage` applies it too.
+  parsed copy. The checks are internal — there is nothing to import or switch
+  on — and `describeCommerceStorage` runs the same ones, so conformance
+  verifies what production enforces.
 - Exported zod schemas for everything crossing the boundary — `OrderSchema`,
   `SkuSchema`, `MoneySchema`, `OrderQuerySchema` and the rest — useful for
   validating rows you rebuilt from JSON columns. A compile-time check keeps
@@ -80,8 +80,7 @@ is yours — your migrations, your pool, your naming.
 ### Changed
 
 - New dependency: `zod` (^4), for the schemas and `checkedStorage`.
-- `versionConflict(orderId, expected, actual)` is deprecated in favor of
-  `storageError.versionConflict`.
+- The standalone `versionConflict()` helper is now `storageError.versionConflict`.
 
 ### Removed
 
