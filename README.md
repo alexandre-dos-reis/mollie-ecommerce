@@ -19,7 +19,8 @@ bun add mollie-ecommerce
 
 Requires [Bun](https://bun.com) 1.2+. The package ships TypeScript sources and
 Bun resolves them directly, so there is no build step — and no transpiled
-output for Node to consume.
+output for Node to consume. Two runtime dependencies: the Mollie SDK and
+[zod](https://zod.dev).
 
 ```bash
 # Working on the library itself
@@ -145,6 +146,7 @@ await myCatalog.saveSku({
 | --- | --- | --- | --- |
 | `gateway` | yes | — | Payment provider. `createMollieGateway({ apiKey })`, or `new FakePaymentGateway()` in tests. |
 | `storage` | yes | — | The seven storage handlers you fulfil. See [Persistence](#persistence). |
+| `onStorageError` | no | — | Called when a handler throws, to log or translate it. See [Handling errors from your storage](#handling-errors-from-your-storage). |
 | `redirectUrl` | no | — | Where Mollie returns the customer after paying. Mollie requires it for most methods. |
 | `cancelUrl` | no | — | Where Mollie returns a customer who abandons the payment. |
 | `webhookUrl` | no | — | Public URL Mollie posts status changes to. Without it you must poll `syncOrder`. Cannot be `localhost`. |
@@ -618,6 +620,98 @@ Four things that make these transactions cheap to run:
   single guarded SQL statement (see [Reference schema](#reserving-stock-in-one-statement)),
   a document update, or a compare-and-swap retry loop.
 
+### Checking the contract at runtime
+
+The contract is only worth as much as its enforcement, so wrap your storage in
+`checkedStorage` and every argument and return value is validated against it:
+
+```ts
+import { checkedStorage } from "mollie-ecommerce";
+
+const commerce = createCommerce({
+  gateway,
+  storage: checkedStorage(myStorage), // validated in both directions
+});
+```
+
+A violation throws `CommerceError("storage_contract")` at the call that caused
+it, naming the handler and the field:
+
+```
+mutateOrder return value does not match the storage contract —
+  total.cents: Invalid input: expected int, received number
+```
+
+It uses [zod](https://zod.dev) schemas for shapes, and also checks the things a
+schema cannot express:
+
+| Handler | Also checked |
+| --- | --- |
+| `loadSkus` | returns only SKUs that were asked for, and none twice |
+| `createOrder` | returns the order it was given, with a version of at least 1; an `out_of_stock` result names at least one shortage |
+| `mutateOrder` | calls the mutator, is handed the order it was asked for, and returns a *higher* version than it started with — a silent lost write is otherwise invisible |
+
+Validated values pass through **unchanged**: the original object is returned,
+never zod's parsed copy, so nothing is stripped or coerced.
+
+Keep it on in development, tests and CI. It costs far less than the database
+round trip beside it, so leaving it on in production is a reasonable trade for
+failing early instead of corrupting an order three steps later.
+`describeCommerceStorage` applies it to whatever you hand it, so the
+conformance suite checks shapes as well as behavior.
+
+The schemas are exported too — `OrderSchema`, `SkuSchema`, `MoneySchema` and
+the rest — which is handy on your side of the line for validating rows you
+rebuilt from JSON columns:
+
+```ts
+import { OrderSchema } from "mollie-ecommerce";
+
+const order = OrderSchema.parse({ ...row, lines: JSON.parse(row.lines) });
+```
+
+### Handling errors from your storage
+
+When a handler throws — a lost connection, a deadlock, a constraint you added
+— the error travels out through whichever `commerce.*` method was running.
+`onStorageError` gives you a single place to see it first:
+
+```ts
+const commerce = createCommerce({
+  gateway,
+  storage: myStorage,
+  onStorageError: (error, { handler, orderId }) => {
+    log.error({ err: error, handler, orderId }, "storage failed");
+
+    // Translate what your driver reports into the library's vocabulary.
+    if (isSerializationFailure(error)) {
+      return new CommerceError("version_conflict", "write raced; retry", { orderId });
+    }
+    if (isUniqueViolation(error, "orders_payment_id")) {
+      return new CommerceError("duplicate_order", "payment already has an order", { orderId });
+    }
+    // Returning nothing lets the original error through untouched.
+  },
+});
+```
+
+| You return | What callers see |
+| --- | --- |
+| a `CommerceError` | that error, with its `code` — so your API error mapping already knows what to do with it |
+| nothing | the original error, unchanged; you have only observed it |
+| (you throw) | whatever you threw |
+
+The context tells you which handler failed and what it was working on:
+`orderId` for order-scoped calls, `skuIds` for `loadSkus`, `key` for the
+lookups. Translating is worth doing for the two codes the library acts on:
+`version_conflict` means "re-read and retry", and `out_of_stock` is the one
+case you should **not** signal by throwing — return it from `createOrder`
+instead.
+
+The hook cannot swallow an error. There is no way to make a failed write look
+like a success, because the commerce layer would then carry on having persisted
+nothing.
+
 ### Why no adapters ship
 
 There is no `SqliteDatabase` or `PostgresDatabase` to import. Your orders table
@@ -690,7 +784,8 @@ const commerce = createCommerce({
 });
 ```
 
-Then hold your implementation to the contract:
+Then hold your implementation to the contract — these run it through
+`checkedStorage` as well, so shapes are verified alongside behavior:
 
 ```ts
 import { describeCommerceStorage } from "mollie-ecommerce/conformance";

@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { money } from "./money.ts";
+import { checkedStorage } from "./storage-guards.ts";
 import type { CommerceStorage } from "./storage-handlers.ts";
 import type { Order, Sku } from "./types.ts";
 
@@ -62,7 +63,11 @@ export function describeCommerceStorage(
   const reserve = [{ skuId: "mug", quantity: 2 }];
 
   beforeEach(async () => {
-    ({ storage, saveSku } = await factory());
+    const under = await factory();
+    // Every call is contract-checked, so shape violations fail here rather
+    // than in whichever test happens to read the bad value.
+    storage = checkedStorage(under.storage);
+    saveSku = under.saveSku;
     await saveSku(mug);
   });
 

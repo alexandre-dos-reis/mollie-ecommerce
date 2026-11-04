@@ -30,9 +30,33 @@ is yours — your migrations, your pool, your naming.
   to get subtly wrong: a shortage must not persist the order, `releaseStock`
   must land in the same write as its mutation, and a throwing mutator must
   leave nothing behind.
+- `checkedStorage(storage)` — wraps the handlers so every argument and return
+  value is validated against the contract with [zod](https://zod.dev), failing
+  at the offending call with `CommerceError("storage_contract")` instead of
+  corrupting an order later. It also checks what a schema cannot express:
+  `loadSkus` returning only requested SKUs and none twice, `createOrder`
+  returning the order it was given with a version, and `mutateOrder` calling
+  the mutator and returning a *higher* version — a silent lost write is
+  otherwise invisible. Validated values pass through unchanged, never zod's
+  parsed copy. `describeCommerceStorage` applies it automatically.
+- Exported zod schemas for everything crossing the boundary — `OrderSchema`,
+  `SkuSchema`, `MoneySchema`, `OrderQuerySchema` and the rest — useful for
+  validating rows you rebuilt from JSON columns. A compile-time check keeps
+  them in step with the TypeScript types.
+- `createCommerce({ onStorageError })` and `withStorageErrorHandler` — one
+  place to see errors thrown inside handlers. Return a `CommerceError` to
+  translate a driver error into the library's vocabulary (a serialization
+  failure into `version_conflict`, a unique violation into `duplicate_order`),
+  return nothing to observe only, or throw your own. The context names the
+  handler and what it was working on. It cannot swallow an error.
+- `CommerceError` code `storage_contract`.
 - README: a "Persistence" section with the contract and a worked example, a
   "Reference schema" section (the SQL the test suites use, as a starting point
   you own), and a revised map of how the data sits next to your catalog.
+
+### Changed
+
+- New dependency: `zod` (^4), for the schemas and `checkedStorage`.
 
 ### Removed
 

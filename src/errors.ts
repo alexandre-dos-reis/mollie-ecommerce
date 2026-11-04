@@ -13,7 +13,9 @@ export type CommerceErrorCode =
   /** Someone else updated the order first; reload and retry. */
   | "version_conflict"
   | "duplicate_order"
-  | "storage_error";
+  | "storage_error"
+  /** A storage handler broke its contract — see `checkedStorage`. */
+  | "storage_contract";
 
 export class CommerceError extends Error {
   constructor(

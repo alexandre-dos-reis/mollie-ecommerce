@@ -13,6 +13,7 @@ import {
   type StockChange,
 } from "./ports.ts";
 import type { CommerceStorage, OrderMutation } from "./storage-handlers.ts";
+import { withStorageErrorHandler, type StorageErrorHandler } from "./storage-guards.ts";
 import {
   isPaid,
   refundableAmount,
@@ -36,8 +37,24 @@ export type CommerceOptions = {
   /**
    * The storage handlers to fulfil. See {@link CommerceStorage} — seven
    * functions, with no transactions or queries on this side of the boundary.
+   *
+   * Wrap it in `checkedStorage` to have every argument and return value
+   * validated against the contract.
    */
   storage: CommerceStorage;
+  /**
+   * Called when a storage handler throws, before the error reaches your
+   * caller. Return a {@link CommerceError} to translate it, return nothing to
+   * just observe it, or throw your own.
+   *
+   * ```ts
+   * onStorageError: (error, { handler, orderId }) => {
+   *   log.error({ err: error, handler, orderId }, "storage failed");
+   *   if (isDeadlock(error)) return new CommerceError("version_conflict", "retry", { orderId });
+   * }
+   * ```
+   */
+  onStorageError?: StorageErrorHandler;
   /**
    * Where Mollie returns the customer after paying. Required by Mollie for
    * most payment methods; override per checkout if it varies.
@@ -171,7 +188,9 @@ export function createCommerce(options: CommerceOptions) {
     reserveStock: shouldReserveStock = true,
   } = options;
 
-  const { storage } = options;
+  const storage = options.onStorageError
+    ? withStorageErrorHandler(options.storage, options.onStorageError)
+    : options.storage;
   const now = () => clock.now().toISOString();
 
   /* ------------------------------------------------------------- internals */

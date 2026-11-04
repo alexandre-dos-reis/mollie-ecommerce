@@ -5,6 +5,8 @@ export * from "./errors.ts";
 export * from "./delivery.ts";
 export * from "./commerce.ts";
 export * from "./storage-handlers.ts";
+export * from "./storage-guards.ts";
+export * from "./schemas.ts";
 export * from "./stock.ts";
 export * from "./fake-gateway.ts";
 export { createMollieGateway, toSnapshot } from "./mollie.ts";

@@ -64,7 +64,12 @@ list them.
   imports no driver.
 - **Storage changes must satisfy the conformance suites.**
   `describeCommerceStorage` (`src/conformance.ts`) is the published contract;
-  `describeDatabase` (`test/storage/conformance.ts`) covers the fixtures. If you add a port method, add
+  `describeDatabase` (`test/storage/conformance.ts`) covers the fixtures.
+- **A contract change is three edits, not one.** Update the JSDoc in
+  `src/storage-handlers.ts`, the zod schema in `src/schemas.ts` (the
+  `satisfies` block there fails the build if a schema drifts from its type),
+  and the checks in `src/storage-guards.ts` — then cover it in
+  `describeCommerceStorage`. If you add a port method, add
   its contract test there — that is what keeps adapters interchangeable.
 - Prefer `FakePaymentGateway` over mocks, and never hit the real Mollie API in
   tests.
