@@ -180,7 +180,8 @@ The workflow needs one of these, or publishing fails with `ENEEDAUTH`:
 - **Trusted publishing** (no secret): on npmjs.com, under the package's
   *Settings → Trusted publisher*, add this repository with workflow
   `release.yml`. GitHub's OIDC token then authenticates the publish, which is
-  why the workflow requests `id-token: write`.
+  why the workflow requests `id-token: write`. The action picks this up on its
+  own — it logs *"No NPM_TOKEN found, but OIDC is available"*.
 - **Automation token**: create a *Granular access token* with the **Automation**
   setting — plain publish tokens are rejected by two-factor authentication —
   and store it as the `NPM_TOKEN` repository secret.
@@ -188,10 +189,16 @@ The workflow needs one of these, or publishing fails with `ENEEDAUTH`:
 Either way the publish is signed with provenance, since `id-token: write` and
 `NPM_CONFIG_PROVENANCE` are set.
 
+**The first publish is the exception.** A trusted publisher is configured on an
+existing package, so it cannot authenticate a package npm has never seen. Claim
+the name once — by hand with your one-time password, or with an automation
+token — and the workflow handles every release after that.
+
 ### Publishing by hand
 
-Still possible, and the fallback if the workflow is wedged. Two-factor
-authentication will prompt for a one-time password:
+Still possible, and the fallback if the workflow is wedged or the package name
+has yet to be claimed. Two-factor authentication will prompt for a one-time
+password:
 
 ```bash
 bun run version                        # apply pending changesets

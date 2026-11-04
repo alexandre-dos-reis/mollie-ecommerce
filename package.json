@@ -48,15 +48,15 @@
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bunx tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "build": "tsdown",
+    "build": "rm -rf dist && bunx tsdown",
     "example": "bun run examples/quickstart.ts",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "bun run check && changeset publish",
-    "prepublishOnly": "bun run check && bun run build",
-    "release:ci": "changeset publish"
+    "changeset": "bunx changeset",
+    "version": "bunx changeset version",
+    "release": "bun run check && bunx changeset publish",
+    "release:ci": "bunx changeset publish",
+    "prepublishOnly": "bun run check && bun run build"
   },
   "dependencies": {
     "mollie-api-typescript": "^1.12.44",
