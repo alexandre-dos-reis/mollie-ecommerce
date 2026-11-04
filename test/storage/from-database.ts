@@ -1,5 +1,5 @@
-import { CommerceError } from "../../src/errors.ts";
-import type { Database, OrderQuery, StockShortage } from "./ports.ts";
+import { storageError } from "../../src/errors.ts";
+import type { Database, OrderQuery } from "./ports.ts";
 import type {
   CommerceStorage,
   CreateOrderInput,
@@ -26,31 +26,22 @@ export function storageFromDatabase(db: Database): CommerceStorage {
   return {
     loadSkus: (ids: string[]): Promise<Sku[]> => db.skus.getMany(ids),
 
-    async createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
-      try {
-        return await db.transaction(async (stores) => {
-          if (input.reserveStock.length > 0) {
-            const shortages = await stores.skus.reserveStock(input.reserveStock);
-            // Throwing is how the transaction is told to roll back; it never
-            // escapes this function.
-            if (shortages.length > 0) throw new Shortages(shortages);
-          }
-          return { status: "created", order: await stores.orders.insert(input.order) };
-        });
-      } catch (error) {
-        if (error instanceof Shortages) {
-          return { status: "out_of_stock", shortages: error.shortages };
+    createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
+      return db.transaction(async (stores) => {
+        if (input.reserveStock.length > 0) {
+          const shortages = await stores.skus.reserveStock(input.reserveStock);
+          // Throwing both rolls the transaction back and reports the shortage,
+          // which the commerce layer accepts in place of the result object.
+          if (shortages.length > 0) throw storageError.outOfStock(shortages);
         }
-        throw error;
-      }
+        return { status: "created", order: await stores.orders.insert(input.order) };
+      });
     },
 
     mutateOrder(orderId: string, apply: OrderMutator): Promise<Order> {
       return db.transaction(async (stores) => {
         const order = await stores.orders.get(orderId);
-        if (!order) {
-          throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
-        }
+        if (!order) throw storageError.orderNotFound(orderId);
         const mutation = (await apply(order)) ?? {};
         if (mutation.releaseStock && mutation.releaseStock.length > 0) {
           await stores.skus.releaseStock(mutation.releaseStock);
@@ -69,9 +60,3 @@ export function storageFromDatabase(db: Database): CommerceStorage {
   };
 }
 
-/** Internal signal: abort the transaction, then report the shortages. */
-class Shortages extends Error {
-  constructor(readonly shortages: StockShortage[]) {
-    super("stock reservation failed");
-  }
-}

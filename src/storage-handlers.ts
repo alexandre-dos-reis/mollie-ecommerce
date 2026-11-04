@@ -23,6 +23,12 @@ import type { Order, Sku } from "./types.ts";
  * each write handler's own predicate — stock sufficiency, order version — is
  * what keeps concurrent callers correct.
  *
+ * **Throwing is a normal way to fail.** Whatever you throw travels out through
+ * the `commerce.*` method that was running. Throw `CommerceError`s via the
+ * `storageError` helpers and your application's error mapping already knows
+ * what to do with them; throw anything else and it reaches the caller
+ * untouched, unless `onStorageError` translates it.
+ *
  * Writing your own tables from a write handler is encouraged — status history,
  * audit rows, your own inventory — since they then commit with the order. What
  * does not belong in a handler:
@@ -62,9 +68,13 @@ export interface CommerceStorage {
    * reference schema.)
    *
    * Assign the order `version: 1` (or your own first version) and return the
-   * stored copy. If any requested stock cannot be satisfied, change nothing
-   * and return the shortages instead — do not throw, and do not persist the
-   * order.
+   * stored copy.
+   *
+   * If any requested stock cannot be satisfied, change nothing — then either
+   * return `{ status: "out_of_stock", shortages }` or throw
+   * `storageError.outOfStock(shortages)`. Both reach the caller as
+   * `CommerceError("out_of_stock")`; throwing is usually the easier one, since
+   * it is also how you abort the transaction.
    *
    * @param input.order The order to store. Its id is already generated.
    * @param input.reserveStock Stock to decrement. Empty when stock
@@ -88,8 +98,8 @@ export interface CommerceStorage {
    * lost race by throwing `CommerceError("version_conflict")` rather than
    * overwriting.
    *
-   * @param orderId The order to change. Throw
-   * `CommerceError("order_not_found")` if it does not exist.
+   * @param orderId The order to change. Throw `storageError.orderNotFound()`
+   * if it does not exist.
    * @param apply Mutates the order in place and returns any stock to give
    * back. Call it once per attempt, on freshly read state — if you retry, it
    * runs again, so keep your own side effects outside it.

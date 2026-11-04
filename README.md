@@ -556,8 +556,9 @@ What **not** to put in a handler:
   order object and the `releaseStock` it returns.
 - **No business rules.** Don't reject transitions, cap refunds, or recompute
   totals — the library already did, and disagreeing silently corrupts state.
-  Validate shapes if you like; make decisions in your application layer, before
-  you call `commerce`.
+  Validate shapes if you like, and throw if your own constraints are violated
+  (see [Throwing from a handler](#throwing-from-a-handler)); make *decisions* in
+  your application layer, before you call `commerce`.
 - **No SKU writes.** There is no handler for them: your catalog owns SKUs and
   the library only reads them. The exception is the stock column, which
   `createOrder` and `mutateOrder` move for you.
@@ -669,6 +670,69 @@ import { OrderSchema } from "mollie-ecommerce";
 
 const order = OrderSchema.parse({ ...row, lines: JSON.parse(row.lines) });
 ```
+
+### Throwing from a handler
+
+Throwing is a normal way for a handler to fail — it is usually also how you
+abort a transaction. Whatever you throw travels out through the `commerce.*`
+method that was running.
+
+`storageError` builds the errors handlers are expected to raise, so your
+application's error mapping only ever has to know `CommerceError.code`:
+
+```ts
+import { storageError } from "mollie-ecommerce";
+
+async mutateOrder(orderId, apply) {
+  return db.transaction(async (tx) => {
+    const order = await tx.loadOrder(orderId);
+    if (!order) throw storageError.orderNotFound(orderId);
+
+    const { releaseStock = [] } = (await apply(order)) ?? {};
+    // …
+
+    const written = await tx.writeOrder(order, { ifVersion: order.version });
+    if (!written) throw storageError.versionConflict(orderId, order.version);
+    return written;
+  });
+}
+```
+
+| Helper | Code | Raise it from |
+| --- | --- | --- |
+| `storageError.outOfStock(shortages)` | `out_of_stock` | `createOrder`, instead of returning the result — see below |
+| `storageError.orderNotFound(orderId)` | `order_not_found` | `mutateOrder`, when the order is gone. The read handlers return `null` instead |
+| `storageError.versionConflict(orderId, expected?, actual?)` | `version_conflict` | `mutateOrder`, when you lost the race. Callers re-read and retry |
+| `storageError.duplicateOrder(orderId, cause?)` | `duplicate_order` | `createOrder`, on a unique-index violation |
+| `storageError.failed(message, cause?)` | `storage_error` | anywhere storage broke for a reason the library has no opinion about |
+
+The last two take the driver error as `cause`, which is where loggers look for
+it. `CommerceError` accepts `{ cause }` generally, so you can wrap your own
+errors without losing them.
+
+**`createOrder` may throw `outOfStock` rather than returning it.** Both reach
+the caller as `CommerceError("out_of_stock")`, and throwing is usually simpler,
+since a transaction aborts by throwing anyway:
+
+```ts
+createOrder({ order, reserveStock }) {
+  return db.transaction(async (tx) => {
+    const shortages = await tx.reserveStock(reserveStock);
+    if (shortages.length > 0) throw storageError.outOfStock(shortages); // rolls back
+    return { status: "created", order: await tx.insertOrder({ ...order, version: 1 }) };
+  });
+}
+```
+
+Anything that is *not* a `CommerceError` propagates untouched — a driver error,
+a `TypeError`, your own class. Use `onStorageError` below if you would rather
+translate them in one place than at every throw site.
+
+One case where the library keeps its own error instead of yours: if
+`createPayment` fails **and** the compensating write that releases the stock
+fails too, you get a `storage_error` saying the reservation is still held, with
+the gateway error as its `cause` and both errors in `details`. Losing the
+reason the payment failed would be the worse outcome.
 
 ### Handling errors from your storage
 

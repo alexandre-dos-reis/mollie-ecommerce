@@ -8,6 +8,7 @@ import {
   OrderQuerySchema,
   OrderSchema,
   SkuSchema,
+  StockShortageSchema,
 } from "./schemas.ts";
 import type {
   CommerceStorage,
@@ -38,7 +39,9 @@ import type { Order, Sku } from "./types.ts";
  * change, with a higher version than it started with.
  *
  * Validated values are passed through **unchanged** — the original object is
- * returned, never zod's parsed copy, so nothing is stripped or coerced.
+ * returned, never zod's parsed copy, so nothing is stripped or coerced. Errors
+ * your handlers throw are passed through too; only a thrown `out_of_stock` is
+ * inspected, since its shortages are part of the contract.
  *
  * Keep it on in development, tests and CI. It is cheap next to a database
  * round trip, so leaving it on in production is a reasonable trade for the
@@ -64,7 +67,21 @@ export function checkedStorage(storage: CommerceStorage): CommerceStorage {
 
     async createOrder(input: CreateOrderInput): Promise<CreateOrderResult> {
       check("createOrder", "arguments", CreateOrderInputSchema, input);
-      const result = await storage.createOrder(input);
+
+      let result: CreateOrderResult;
+      try {
+        result = await storage.createOrder(input);
+      } catch (error) {
+        // Throwing `out_of_stock` is an allowed alternative to returning it,
+        // so its shortages are held to the same shape.
+        if (error instanceof CommerceError && error.code === "out_of_stock") {
+          const shortages = error.details?.shortages;
+          if (shortages !== undefined) {
+            check("createOrder", "the shortages it threw", z.array(StockShortageSchema), shortages);
+          }
+        }
+        throw error;
+      }
       check("createOrder", "return value", CreateOrderResultSchema, result);
 
       if (result.status === "created") {

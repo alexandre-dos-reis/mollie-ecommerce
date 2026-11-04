@@ -1,5 +1,5 @@
 import { assertTransition } from "./delivery.ts";
-import { CommerceError } from "./errors.ts";
+import { CommerceError, storageError } from "./errors.ts";
 import { money, multiply, subtract, sum } from "./money.ts";
 import type { Money } from "./money.ts";
 import {
@@ -340,12 +340,9 @@ export function createCommerce(options: CommerceOptions) {
     });
 
     if (created.status === "out_of_stock") {
-      const first = created.shortages[0];
-      throw new CommerceError(
-        "out_of_stock",
-        first ? `sku ${first.skuId} is out of stock` : "out of stock",
-        { shortages: created.shortages },
-      );
+      // A handler may equally throw `storageError.outOfStock(...)`, which
+      // already carries this code and reaches the caller unchanged.
+      throw storageError.outOfStock(created.shortages);
     }
     const draft = created.order;
 
@@ -364,13 +361,25 @@ export function createCommerce(options: CommerceOptions) {
         idempotencyKey: input.idempotencyKey,
       });
     } catch (error) {
-      // Don't sit on stock for an order that can never be paid.
-      await mutate(draft.id, (order) => {
-        order.payment.state = "failed";
-        const releaseStock = releaseReservation(order);
-        if (order.delivery.state === "not_started") order.delivery.state = "canceled";
-        return { releaseStock };
-      });
+      // Don't sit on stock for an order that can never be paid. If this
+      // compensating write fails too, the gateway error is still the useful
+      // one, so it wins — the storage failure rides along as its cause.
+      try {
+        await mutate(draft.id, (order) => {
+          order.payment.state = "failed";
+          const releaseStock = releaseReservation(order);
+          if (order.delivery.state === "not_started") order.delivery.state = "canceled";
+          return { releaseStock };
+        });
+      } catch (compensationError) {
+        throw new CommerceError(
+          "storage_error",
+          `payment creation failed for order ${draft.id}, and releasing its stock failed too` +
+            ` — the reservation is still held`,
+          { orderId: draft.id, gatewayError: error, storageError: compensationError },
+          { cause: error },
+        );
+      }
       throw error;
     }
 

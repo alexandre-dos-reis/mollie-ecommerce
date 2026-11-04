@@ -49,14 +49,34 @@ is yours — your migrations, your pool, your naming.
   failure into `version_conflict`, a unique violation into `duplicate_order`),
   return nothing to observe only, or throw your own. The context names the
   handler and what it was working on. It cannot swallow an error.
+- `storageError` — helpers for the errors a handler is expected to raise:
+  `outOfStock`, `orderNotFound`, `versionConflict`, `duplicateOrder` and
+  `failed`, so handlers speak the same vocabulary as the rest of the library
+  and your error mapping only needs `CommerceError.code`.
+- `createOrder` may now **throw** `storageError.outOfStock(shortages)` instead
+  of returning `{ status: "out_of_stock" }`. Both reach the caller as
+  `out_of_stock`, and throwing is usually simpler since a transaction aborts by
+  throwing anyway. `describeCommerceStorage` accepts either.
+- `CommerceError` accepts `{ cause }`, so a handler can wrap a driver error
+  without losing it.
 - `CommerceError` code `storage_contract`.
 - README: a "Persistence" section with the contract and a worked example, a
   "Reference schema" section (the SQL the test suites use, as a starting point
   you own), and a revised map of how the data sits next to your catalog.
 
+### Fixed
+
+- A failed compensating write no longer hides the error that caused it. If
+  `createPayment` fails and releasing the stock fails too, the thrown error is
+  a `storage_error` that says the reservation is still held, carrying the
+  gateway error as its `cause` and both in `details` — previously the storage
+  error replaced the gateway one, losing the reason the payment failed.
+
 ### Changed
 
 - New dependency: `zod` (^4), for the schemas and `checkedStorage`.
+- `versionConflict(orderId, expected, actual)` is deprecated in favor of
+  `storageError.versionConflict`.
 
 ### Removed
 

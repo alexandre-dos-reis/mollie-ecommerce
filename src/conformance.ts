@@ -1,7 +1,9 @@
 import { beforeEach, expect, test } from "bun:test";
+import { CommerceError } from "./errors.ts";
 import { money } from "./money.ts";
+import type { StockShortage } from "./ports.ts";
 import { checkedStorage } from "./storage-guards.ts";
-import type { CommerceStorage } from "./storage-handlers.ts";
+import type { CommerceStorage, CreateOrderInput } from "./storage-handlers.ts";
 import type { Order, Sku } from "./types.ts";
 
 /**
@@ -89,18 +91,51 @@ export function describeCommerceStorage(
   });
 
   test(`${name}: createOrder reports shortages and stores nothing`, async () => {
-    const result = await storage.createOrder({
+    // Returning the result and throwing `storageError.outOfStock` are both
+    // allowed, so either is accepted here.
+    const shortages = await outOfStock({
       order: order(),
       reserveStock: [{ skuId: "mug", quantity: 99 }],
     });
 
-    expect(result.status).toBe("out_of_stock");
-    if (result.status !== "out_of_stock") return;
-    expect(result.shortages).toEqual([{ skuId: "mug", requested: 99, available: 10 }]);
+    expect(shortages).toEqual([{ skuId: "mug", requested: 99, available: 10 }]);
     // Neither the order nor the stock may have moved.
     expect(await storage.findOrder("ord_1")).toBeNull();
     expect((await storage.loadSkus(["mug"]))[0]!.stock).toBe(10);
   });
+
+  test(`${name}: a second order cannot take stock the first already holds`, async () => {
+    await saveSku({ ...mug, stock: 3 });
+    const first = await storage.createOrder({
+      order: order({ id: "ord_first" }),
+      reserveStock: [{ skuId: "mug", quantity: 2 }],
+    });
+    expect(first.status).toBe("created");
+
+    const shortages = await outOfStock({
+      order: order({ id: "ord_second" }),
+      reserveStock: [{ skuId: "mug", quantity: 2 }],
+    });
+    expect(shortages).toEqual([{ skuId: "mug", requested: 2, available: 1 }]);
+    expect(await storage.findOrder("ord_second")).toBeNull();
+    expect((await storage.loadSkus(["mug"]))[0]!.stock).toBe(1);
+  });
+
+  /** Normalizes the two allowed ways of refusing a reservation. */
+  async function outOfStock(input: CreateOrderInput): Promise<StockShortage[]> {
+    try {
+      const result = await storage.createOrder(input);
+      if (result.status !== "out_of_stock") {
+        throw new Error(`expected out_of_stock, got ${result.status}`);
+      }
+      return result.shortages;
+    } catch (error) {
+      if (error instanceof CommerceError && error.code === "out_of_stock") {
+        return (error.details?.shortages ?? []) as StockShortage[];
+      }
+      throw error;
+    }
+  }
 
   test(`${name}: createOrder with no reservation leaves stock alone`, async () => {
     const result = await storage.createOrder({ order: order(), reserveStock: [] });
