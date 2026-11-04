@@ -4,27 +4,17 @@ export * from "./ports.ts";
 export * from "./errors.ts";
 export * from "./delivery.ts";
 export * from "./commerce.ts";
+export * from "./storage-handlers.ts";
+// `checkedStorage` is internal: `createCommerce` applies it to every storage,
+// so there is nothing for a consumer to switch on. Only the error-hook types
+// are public, since they appear in `CommerceOptions`.
+export type { StorageErrorContext, StorageErrorHandler } from "./storage-guards.ts";
+export * from "./schemas.ts";
+export * from "./stock.ts";
 export * from "./fake-gateway.ts";
 export { createMollieGateway, toSnapshot } from "./mollie.ts";
 export type { MollieGatewayOptions } from "./mollie.ts";
 
-/* Storage: ports live in `ports.ts`, implementations here. */
-export {
-  InMemoryDatabase,
-  InMemoryOrderStore,
-  InMemorySkuStore,
-} from "./storage/memory.ts";
-// The SQL adapters are NOT re-exported here, so the core pulls in nothing.
-// Import them from `mollie-ecommerce/storage/sqlite` (which needs
-// `bun:sqlite`) and `mollie-ecommerce/storage/postgres` (bring your own
-// driver).
-export { aggregateStock } from "./storage/stock.ts";
-export {
-  orderToRow,
-  skuToRow,
-  rowToOrder,
-  rowToSku,
-  SCHEMA_SQL,
-  type OrderRow,
-  type SkuRow,
-} from "./storage/rows.ts";
+// No database adapters are published: storage is yours to fulfil. See
+// `CommerceStorage`, `examples/memory-storage.ts` for a minimal
+// implementation, and `mollie-ecommerce/conformance` to verify your own.

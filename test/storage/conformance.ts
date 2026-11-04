@@ -1,8 +1,8 @@
 import { beforeEach, expect, test } from "bun:test";
-import { CommerceError } from "../errors.ts";
-import { money } from "../money.ts";
-import type { Database } from "../ports.ts";
-import type { Order, Sku } from "../types.ts";
+import { CommerceError } from "../../src/errors.ts";
+import { money } from "../../src/money.ts";
+import type { Database } from "./ports.ts";
+import type { Order, Sku } from "../../src/types.ts";
 
 /**
  * Contract tests for a {@link Database} implementation. Call it from a test

@@ -6,6 +6,99 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## 0.4.0 — 2026-11-04
+
+**Breaking.** `createCommerce` no longer performs storage work, and the package
+no longer ships storage adapters. It opens no transaction, issues no query, and
+knows nothing about tables: it calls seven handlers you fulfil, and persistence
+is yours — your migrations, your pool, your naming.
+
+### Added
+
+- `CommerceStorage` — the handler contract: `loadSkus`, `findOrder`,
+  `findOrderByPaymentId`, `findOrderByIdempotencyKey`, `listOrders`, plus the
+  two write handlers `createOrder` (order and stock together, returning
+  `{ status: "out_of_stock", shortages }` rather than throwing) and
+  `mutateOrder` (read, apply a mutation, persist atomically with any
+  `releaseStock`). Atomicity and concurrency are now the handler's contract,
+  documented per handler.
+- `examples/memory-storage.ts` — a complete handler implementation over two
+  maps, published with the package as a copy-paste starting point, and covered
+  by this repo's lifecycle tests so it cannot drift.
+- `describeCommerceStorage` in `mollie-ecommerce/conformance` — 11
+  contract tests for a handler implementation, covering the cases that are easy
+  to get subtly wrong: a shortage must not persist the order, `releaseStock`
+  must land in the same write as its mutation, and a throwing mutator must
+  leave nothing behind.
+- **Runtime contract enforcement, always on.** `createCommerce` validates every
+  argument and return value crossing the storage boundary with
+  [zod](https://zod.dev), failing at the offending call with
+  `CommerceError("storage_contract")` instead of corrupting an order later.
+  Roughly 2µs per order, and nothing to switch on. It also checks what a schema
+  cannot express:
+  `loadSkus` returning only requested SKUs and none twice, `createOrder`
+  returning the order it was given with a version, and `mutateOrder` calling
+  the mutator and returning a *higher* version — a silent lost write is
+  otherwise invisible. Validated values pass through unchanged, never zod's
+  parsed copy. The checks are internal — there is nothing to import or switch
+  on — and `describeCommerceStorage` runs the same ones, so conformance
+  verifies what production enforces.
+- Exported zod schemas for everything crossing the boundary — `OrderSchema`,
+  `SkuSchema`, `MoneySchema`, `OrderQuerySchema` and the rest — useful for
+  validating rows you rebuilt from JSON columns. A compile-time check keeps
+  them in step with the TypeScript types.
+- `createCommerce({ onStorageError })` and `withStorageErrorHandler` — one
+  place to see errors thrown inside handlers. Return a `CommerceError` to
+  translate a driver error into the library's vocabulary (a serialization
+  failure into `version_conflict`, a unique violation into `duplicate_order`),
+  return nothing to observe only, or throw your own. The context names the
+  handler and what it was working on, including contract violations. It cannot
+  swallow an error.
+- `storageError` — helpers for the errors a handler is expected to raise:
+  `outOfStock`, `orderNotFound`, `versionConflict`, `duplicateOrder` and
+  `failed`, so handlers speak the same vocabulary as the rest of the library
+  and your error mapping only needs `CommerceError.code`.
+- `createOrder` may now **throw** `storageError.outOfStock(shortages)` instead
+  of returning `{ status: "out_of_stock" }`. Both reach the caller as
+  `out_of_stock`, and throwing is usually simpler since a transaction aborts by
+  throwing anyway. `describeCommerceStorage` accepts either.
+- `CommerceError` accepts `{ cause }`, so a handler can wrap a driver error
+  without losing it.
+- `CommerceError` code `storage_contract`.
+- README: a "Persistence" section with the contract and a worked example, a
+  "Reference schema" section (the SQL the test suites use, as a starting point
+  you own), and a revised map of how the data sits next to your catalog.
+
+### Fixed
+
+- A failed compensating write no longer hides the error that caused it. If
+  `createPayment` fails and releasing the stock fails too, the thrown error is
+  a `storage_error` that says the reservation is still held, carrying the
+  gateway error as its `cause` and both in `details` — previously the storage
+  error replaced the gateway one, losing the reason the payment failed.
+
+### Changed
+
+- New dependency: `zod` (^4), for the exported schemas and the internal
+  contract checks.
+- The standalone `versionConflict()` helper is now `storageError.versionConflict`.
+
+### Removed
+
+- **All storage adapters and their exports.** `InMemoryDatabase`,
+  `SqliteDatabase`, the Postgres stores, `storageFromDatabase`, the `Database`
+  / `SkuStore` / `OrderStore` ports, the row mappers, `SCHEMA_SQL`,
+  `describeDatabase`, and the `./storage/*` subpaths are gone from the package.
+  They live on under `test/` as fixtures, so the lifecycle suite still runs
+  against in-memory, SQLite and Postgres storage.
+- `createCommerce({ db })`. Pass `storage` instead; to keep the old behavior,
+  copy `test/storage/from-database.ts` into your project.
+
+### Changed
+
+- `commerce.db` → `commerce.storage`, exposing the handlers you passed in.
+- The `./conformance` subpath replaces `./storage/conformance`.
+
 ## 0.3.0 — 2026-11-03
 
 **Breaking.** The sellable unit is now a SKU rather than a product, because a

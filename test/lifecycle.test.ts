@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { createCommerce, type Commerce } from "./commerce.ts";
-import { CommerceError } from "./errors.ts";
-import { FakePaymentGateway } from "./fake-gateway.ts";
-import { fromMollieAmount, money, toMollieAmount } from "./money.ts";
-import type { Database } from "./ports.ts";
+import { createCommerce, type Commerce } from "../src/commerce.ts";
+import { CommerceError } from "../src/errors.ts";
+import { FakePaymentGateway } from "../src/fake-gateway.ts";
+import { fromMollieAmount, money, toMollieAmount } from "../src/money.ts";
+import type { Sku } from "../src/types.ts";
+import { createPglitePostgres } from "./pglite-pool.ts";
+import { storageFromDatabase } from "./storage/from-database.ts";
 import { InMemoryDatabase } from "./storage/memory.ts";
+import type { Database } from "./storage/ports.ts";
 import { SqliteDatabase } from "./storage/sqlite.ts";
-import { createPglitePostgres } from "../test/pglite-pool.ts";
-import type { Sku } from "./types.ts";
 
 const mug: Sku = {
   id: "mug",
@@ -32,7 +33,11 @@ test("money round-trips through Mollie's decimal strings", () => {
   expect(fromMollieAmount({ currency: "JPY", value: "1250" })).toEqual(money(1250, "JPY"));
 });
 
-/** The whole lifecycle runs against every storage adapter. */
+/**
+ * The whole lifecycle, run against every storage adapter in this repo — all of
+ * them driven through `storageFromDatabase`, so what is exercised is the same
+ * handler contract consumers fulfil.
+ */
 // The Postgres adapter is exercised through PGlite, a WebAssembly Postgres
 // used only in tests. Booting it takes ~1s, so it is shared and truncated.
 const postgres = await createPglitePostgres();
@@ -59,7 +64,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
       await db.skus.save(ebook);
       commerce = createCommerce({
         gateway,
-        db,
+        storage: storageFromDatabase(db),
         redirectUrl: "https://shop.test/thanks",
         webhookUrl: "https://shop.test/webhook",
       });
@@ -128,7 +133,7 @@ for (const [name, makeDb] of Object.entries(databases)) {
         items: [{ skuId: "tshirt-red-m" }, { skuId: "tshirt-blue-l" }],
       });
       expect(mixed.order.total).toEqual(money(4198, "EUR"));
-      expect((await commerce.db.skus.list({ productId: "tshirt" })).map((row) => row.id)).toEqual([
+      expect((await db.skus.list({ productId: "tshirt" })).map((row: Sku) => row.id)).toEqual([
         "tshirt-blue-l",
         "tshirt-red-m",
       ]);

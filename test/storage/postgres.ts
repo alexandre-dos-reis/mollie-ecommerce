@@ -1,4 +1,4 @@
-import { CommerceError, versionConflict } from "../errors.ts";
+import { CommerceError, storageError } from "../../src/errors.ts";
 import type {
   Database,
   OrderQuery,
@@ -8,8 +8,8 @@ import type {
   StockChange,
   StockShortage,
   Stores,
-} from "../ports.ts";
-import type { Order, Sku } from "../types.ts";
+} from "./ports.ts";
+import type { Order, Sku } from "../../src/types.ts";
 import {
   orderToRow,
   skuToRow,
@@ -19,7 +19,7 @@ import {
   type OrderRow,
   type SkuRow,
 } from "./rows.ts";
-import { aggregateStock } from "./stock.ts";
+import { aggregateStock } from "../../src/stock.ts";
 
 /**
  * Postgres storage. You bring the connection: this module imports no driver,
@@ -261,7 +261,7 @@ export class PostgresOrderStore implements OrderStore {
       if (!current[0]) {
         throw new CommerceError("order_not_found", `no order ${order.id}`, { orderId: order.id });
       }
-      throw versionConflict(order.id, order.version, current[0].version);
+      throw storageError.versionConflict(order.id, order.version, current[0].version);
     }
     return stored;
   }

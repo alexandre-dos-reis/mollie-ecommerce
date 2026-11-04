@@ -1,20 +1,23 @@
 import { assertTransition } from "./delivery.ts";
-import { CommerceError } from "./errors.ts";
+import { CommerceError, storageError } from "./errors.ts";
 import { money, multiply, subtract, sum } from "./money.ts";
 import type { Money } from "./money.ts";
 import {
   randomId,
   systemClock,
   type Clock,
-  type Database,
   type IdGenerator,
   type OrderQuery,
   type PaymentGateway,
   type PaymentSnapshot,
-  type SkuStore,
   type StockChange,
-  type Stores,
 } from "./ports.ts";
+import type { CommerceStorage, OrderMutation } from "./storage-handlers.ts";
+import {
+  checkedStorage,
+  withStorageErrorHandler,
+  type StorageErrorHandler,
+} from "./storage-guards.ts";
 import {
   isPaid,
   refundableAmount,
@@ -36,10 +39,28 @@ export type CommerceOptions = {
    */
   gateway: PaymentGateway;
   /**
-   * Storage. Any {@link Database} implementation: `InMemoryDatabase`, the
-   * SQLite reference adapter, or your own.
+   * The storage handlers to fulfil. See {@link CommerceStorage} — seven
+   * functions, with no transactions or queries on this side of the boundary.
+   *
+   * Every argument and return value is validated against the contract (see
+   * `checkedStorage`), so a handler that drifts fails immediately and says
+   * which field was wrong.
    */
-  db: Database;
+  storage: CommerceStorage;
+  /**
+   * Called when a storage handler throws, before the error reaches your
+   * caller. Return a {@link CommerceError} to translate it, return nothing to
+   * just observe it, or throw your own. Contract violations
+   * (`storage_contract`) pass through here as well.
+   *
+   * ```ts
+   * onStorageError: (error, { handler, orderId }) => {
+   *   log.error({ err: error, handler, orderId }, "storage failed");
+   *   if (isDeadlock(error)) return new CommerceError("version_conflict", "retry", { orderId });
+   * }
+   * ```
+   */
+  onStorageError?: StorageErrorHandler;
   /**
    * Where Mollie returns the customer after paying. Required by Mollie for
    * most payment methods; override per checkout if it varies.
@@ -161,33 +182,42 @@ export type ReturnInput = {
  * ```
  *
  * Every method throws {@link CommerceError} with a machine-readable `code`.
- * No gateway call happens inside a database transaction.
+ * No gateway call happens inside a storage write handler, so the transactions
+ * you open there stay short.
  */
 export function createCommerce(options: CommerceOptions) {
   const {
     gateway,
-    db,
     clock = systemClock,
     generateId = randomId,
     autoDeliverDigital = true,
     reserveStock: shouldReserveStock = true,
   } = options;
 
+  // The contract is always enforced: a handler that breaks it fails at the
+  // call that broke it, rather than corrupting an order further along.
+  // `onStorageError` sits outside, so it sees contract violations too.
+  const checked = checkedStorage(options.storage);
+  const storage = options.onStorageError
+    ? withStorageErrorHandler(checked, options.onStorageError)
+    : checked;
   const now = () => clock.now().toISOString();
 
   /* ------------------------------------------------------------- internals */
 
-  async function mustGetOrder(stores: Stores, orderId: string): Promise<Order> {
-    const order = await stores.orders.get(orderId);
-    if (!order) {
-      throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
-    }
-    return order;
-  }
-
-  async function save(stores: Stores, order: Order): Promise<Order> {
-    order.updatedAt = now();
-    return stores.orders.update(order);
+  /**
+   * Every write to an existing order goes through here: the handler decides
+   * atomicity, this side only describes the change.
+   */
+  function mutate(
+    orderId: string,
+    apply: (order: Order) => OrderMutation | void,
+  ): Promise<Order> {
+    return storage.mutateOrder(orderId, (order) => {
+      const mutation = apply(order);
+      order.updatedAt = now();
+      return mutation ?? {};
+    });
   }
 
   function stockChanges(order: Order): StockChange[] {
@@ -198,18 +228,17 @@ export function createCommerce(options: CommerceOptions) {
   }
 
   /** Give stock back exactly once, whoever triggers it. */
-  async function releaseReservation(stores: Stores, order: Order): Promise<void> {
-    if (!order.stockReserved) return;
-    await stores.skus.releaseStock(stockChanges(order));
+  function releaseReservation(order: Order): StockChange[] {
+    if (!order.stockReserved) return [];
     order.stockReserved = false;
+    return stockChanges(order);
   }
 
-  /** Mutates `order` to reflect a gateway snapshot, including knock-on effects. */
-  async function reconcile(
-    stores: Stores,
-    order: Order,
-    snapshot: PaymentSnapshot,
-  ): Promise<Order> {
+  /**
+   * Mutates `order` to reflect a gateway snapshot, including knock-on effects,
+   * and reports any stock the storage handler should give back.
+   */
+  function reconcile(order: Order, snapshot: PaymentSnapshot): OrderMutation {
     const wasPaid = isPaid(order);
     order.payment.state = derivePaymentState(snapshot, order.total);
     if (snapshot.amountRefunded) order.payment.amountRefunded = snapshot.amountRefunded;
@@ -222,18 +251,27 @@ export function createCommerce(options: CommerceOptions) {
     }
 
     if (DEAD_PAYMENT_STATES.includes(order.payment.state)) {
-      await releaseReservation(stores, order);
+      const releaseStock = releaseReservation(order);
       if (order.delivery.state === "not_started") order.delivery.state = "canceled";
+      return { releaseStock };
     }
 
+    return {};
+  }
+
+  async function mustGetOrder(orderId: string): Promise<Order> {
+    const order = await storage.findOrder(orderId);
+    if (!order) {
+      throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
+    }
     return order;
   }
 
-  async function priceCart(skus: SkuStore, items: CartItem[]): Promise<OrderLine[]> {
+  /** Merges repeated SKUs, so a cart is one batched read and one line each. */
+  function cartQuantities(items: CartItem[]): Map<string, number> {
     if (items.length === 0) {
       throw new CommerceError("empty_cart", "checkout needs at least one item");
     }
-
     const quantities = new Map<string, number>();
     for (const item of items) {
       const quantity = item.quantity ?? 1;
@@ -242,10 +280,11 @@ export function createCommerce(options: CommerceOptions) {
       }
       quantities.set(item.skuId, (quantities.get(item.skuId) ?? 0) + quantity);
     }
+    return quantities;
+  }
 
-    // One batched read, so a big cart stays a single round trip.
-    const found = await skus.getMany([...quantities.keys()]);
-    const byId = new Map(found.map((sku) => [sku.id, sku]));
+  function priceCart(skus: Sku[], quantities: Map<string, number>): OrderLine[] {
+    const byId = new Map(skus.map((sku) => [sku.id, sku]));
 
     const lines: OrderLine[] = [];
     for (const [skuId, quantity] of quantities) {
@@ -276,34 +315,25 @@ export function createCommerce(options: CommerceOptions) {
 
   async function checkout(input: CheckoutInput): Promise<CheckoutResult> {
     if (input.idempotencyKey) {
-      const existing = await db.orders.findByIdempotencyKey(input.idempotencyKey);
+      const existing = await storage.findOrderByIdempotencyKey(input.idempotencyKey);
       if (existing) {
         return { order: existing, checkoutUrl: existing.payment.checkoutUrl, replayed: true };
       }
     }
 
-    // Phase 1: price the cart, hold the stock, persist the order. One
-    // transaction, no network inside it.
-    const draft = await db.transaction(async (stores) => {
-      const lines = await priceCart(stores.skus, input.items);
-      const total = sum(lines.map((line) => line.total));
+    // Phase 1: price the cart, then hand the order and its stock to one write
+    // handler — which is where they are made atomic.
+    const quantities = cartQuantities(input.items);
+    const lines = priceCart(await storage.loadSkus([...quantities.keys()]), quantities);
+    const total = sum(lines.map((line) => line.total));
+    const reserveStock = shouldReserveStock
+      ? lines.map((line) => ({ skuId: line.skuId, quantity: line.quantity }))
+      : [];
 
-      let reserved = false;
-      if (shouldReserveStock) {
-        const shortages = await stores.skus.reserveStock(
-          lines.map((line) => ({ skuId: line.skuId, quantity: line.quantity })),
-        );
-        if (shortages.length > 0) {
-          const first = shortages[0]!;
-          throw new CommerceError("out_of_stock", `sku ${first.skuId} is out of stock`, {
-            shortages,
-          });
-        }
-        reserved = true;
-      }
-
-      const createdAt = now();
-      return stores.orders.insert({
+    const createdAt = now();
+    const created = await storage.createOrder({
+      reserveStock,
+      order: {
         id: generateId("ord"),
         version: 0,
         idempotencyKey: input.idempotencyKey,
@@ -311,13 +341,20 @@ export function createCommerce(options: CommerceOptions) {
         total,
         customer: input.customer,
         payment: { state: "created", amountRefunded: money(0, total.currency) },
-        stockReserved: reserved,
+        stockReserved: reserveStock.length > 0,
         delivery: { state: "not_started" },
         refunds: [],
         createdAt,
         updatedAt: createdAt,
-      });
+      },
     });
+
+    if (created.status === "out_of_stock") {
+      // A handler may equally throw `storageError.outOfStock(...)`, which
+      // already carries this code and reaches the caller unchanged.
+      throw storageError.outOfStock(created.shortages);
+    }
+    const draft = created.order;
 
     // Phase 2: the gateway call, outside any transaction.
     let snapshot: PaymentSnapshot;
@@ -334,24 +371,33 @@ export function createCommerce(options: CommerceOptions) {
         idempotencyKey: input.idempotencyKey,
       });
     } catch (error) {
-      // Don't sit on stock for an order that can never be paid.
-      await db.transaction(async (stores) => {
-        const order = await mustGetOrder(stores, draft.id);
-        order.payment.state = "failed";
-        await releaseReservation(stores, order);
-        if (order.delivery.state === "not_started") order.delivery.state = "canceled";
-        await save(stores, order);
-      });
+      // Don't sit on stock for an order that can never be paid. If this
+      // compensating write fails too, the gateway error is still the useful
+      // one, so it wins — the storage failure rides along as its cause.
+      try {
+        await mutate(draft.id, (order) => {
+          order.payment.state = "failed";
+          const releaseStock = releaseReservation(order);
+          if (order.delivery.state === "not_started") order.delivery.state = "canceled";
+          return { releaseStock };
+        });
+      } catch (compensationError) {
+        throw new CommerceError(
+          "storage_error",
+          `payment creation failed for order ${draft.id}, and releasing its stock failed too` +
+            ` — the reservation is still held`,
+          { orderId: draft.id, gatewayError: error, storageError: compensationError },
+          { cause: error },
+        );
+      }
       throw error;
     }
 
     // Phase 3: record what the gateway told us.
-    const order = await db.transaction(async (stores) => {
-      const current = await mustGetOrder(stores, draft.id);
+    const order = await mutate(draft.id, (current) => {
       current.payment.id = snapshot.id;
       current.payment.checkoutUrl = snapshot.checkoutUrl;
-      await reconcile(stores, current, snapshot);
-      return save(stores, current);
+      return reconcile(current, snapshot);
     });
 
     return { order, checkoutUrl: order.payment.checkoutUrl, replayed: false };
@@ -360,43 +406,27 @@ export function createCommerce(options: CommerceOptions) {
   /* ----------------------------------------------------------------- sync */
 
   async function syncOrder(orderId: string): Promise<Order> {
-    const order = await db.orders.get(orderId);
-    if (!order) {
-      throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
-    }
+    const order = await mustGetOrder(orderId);
     if (!order.payment.id) return order;
 
     const snapshot = await gateway.getPayment(order.payment.id);
-    return db.transaction(async (stores) => {
-      const current = await mustGetOrder(stores, orderId);
-      await reconcile(stores, current, snapshot);
-      return save(stores, current);
-    });
+    return mutate(orderId, (current) => reconcile(current, snapshot));
   }
 
   async function handleWebhook(paymentId: string): Promise<Order | null> {
-    const known = await db.orders.findByPaymentId(paymentId);
+    const known = await storage.findOrderByPaymentId(paymentId);
     if (!known) return null;
 
     const snapshot = await gateway.getPayment(paymentId);
-    return db.transaction(async (stores) => {
-      const current = await mustGetOrder(stores, known.id);
-      await reconcile(stores, current, snapshot);
-      return save(stores, current);
-    });
+    return mutate(known.id, (current) => reconcile(current, snapshot));
   }
 
   /* --------------------------------------------------------------- refund */
 
   async function refund(input: RefundInput): Promise<RefundResult> {
-    // Validate against freshly read state, then call the gateway outside a
-    // transaction, then persist with the optimistic lock.
-    const order = await db.orders.get(input.orderId);
-    if (!order) {
-      throw new CommerceError("order_not_found", `no order ${input.orderId}`, {
-        orderId: input.orderId,
-      });
-    }
+    // Validate against freshly read state, call the gateway, then persist
+    // through the write handler.
+    const order = await mustGetOrder(input.orderId);
     if (!isPaid(order) || !order.payment.id) {
       throw new CommerceError("not_refundable", `order ${order.id} is not paid`, {
         orderId: order.id,
@@ -441,8 +471,7 @@ export function createCommerce(options: CommerceOptions) {
       createdAt: now(),
     };
 
-    const saved = await db.transaction(async (stores) => {
-      const current = await mustGetOrder(stores, order.id);
+    const saved = await mutate(order.id, (current) => {
       current.refunds.push(record);
 
       if (record.state !== "failed" && record.state !== "canceled") {
@@ -455,7 +484,6 @@ export function createCommerce(options: CommerceOptions) {
             ? "refunded"
             : "partially_refunded";
       }
-      return save(stores, current);
     });
 
     return { order: saved, refund: record };
@@ -465,40 +493,32 @@ export function createCommerce(options: CommerceOptions) {
 
   function transition(state: DeliveryState) {
     return (orderId: string) =>
-      db.transaction(async (stores) => {
-        const order = await mustGetOrder(stores, orderId);
+      mutate(orderId, (order) => {
         assertTransition(order.delivery.state, state);
         order.delivery.state = state;
-        return save(stores, order);
       });
   }
 
   async function markShipped(input: ShipInput): Promise<Order> {
-    return db.transaction(async (stores) => {
-      const order = await mustGetOrder(stores, input.orderId);
+    return mutate(input.orderId, (order) => {
       assertTransition(order.delivery.state, "shipped");
       order.delivery.state = "shipped";
       order.delivery.carrier = input.carrier ?? order.delivery.carrier;
       order.delivery.trackingCode = input.trackingCode ?? order.delivery.trackingCode;
-      return save(stores, order);
     });
   }
 
   async function markReturned(input: ReturnInput): Promise<Order> {
-    return db.transaction(async (stores) => {
-      const order = await mustGetOrder(stores, input.orderId);
+    return mutate(input.orderId, (order) => {
       assertTransition(order.delivery.state, "returned");
       order.delivery.state = "returned";
-      if (input.restock) await stores.skus.releaseStock(stockChanges(order));
-      return save(stores, order);
+      // Returning the goods to stock is part of the same atomic write.
+      return input.restock ? { releaseStock: stockChanges(order) } : {};
     });
   }
 
   async function cancelOrder(orderId: string): Promise<Order> {
-    const order = await db.orders.get(orderId);
-    if (!order) {
-      throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
-    }
+    const order = await mustGetOrder(orderId);
     if (isPaid(order)) {
       throw new CommerceError(
         "not_payable",
@@ -508,16 +528,13 @@ export function createCommerce(options: CommerceOptions) {
     }
 
     const snapshot = order.payment.id ? await gateway.cancelPayment(order.payment.id) : undefined;
-    return db.transaction(async (stores) => {
-      const current = await mustGetOrder(stores, orderId);
-      if (snapshot) {
-        await reconcile(stores, current, snapshot);
-      } else {
-        current.payment.state = "canceled";
-        await releaseReservation(stores, current);
-      }
+    return mutate(orderId, (current) => {
+      const mutation = snapshot
+        ? reconcile(current, snapshot)
+        : ((current.payment.state = "canceled"),
+          { releaseStock: releaseReservation(current) });
       if (current.delivery.state === "not_started") current.delivery.state = "canceled";
-      return save(stores, current);
+      return mutation;
     });
   }
 
@@ -648,7 +665,7 @@ export function createCommerce(options: CommerceOptions) {
      * @param orderId The order to read.
      * @returns The order, or `null` if it does not exist.
      */
-    getOrder: (orderId: string) => db.orders.get(orderId),
+    getOrder: (orderId: string) => storage.findOrder(orderId),
 
     /**
      * Lists orders, newest-created last.
@@ -658,17 +675,19 @@ export function createCommerce(options: CommerceOptions) {
      * State filters accept one value or an array.
      * @returns Matching orders.
      */
-    findOrders: (query?: OrderQuery) => db.orders.find(query),
+    findOrders: (query?: OrderQuery) => storage.listOrders(query),
 
     /**
-     * The database you passed in. Use it for catalog writes (`db.skus.save`),
-     * reads, and your own queries.
+     * The storage handlers in use, as resolved from `storage` or `db`. Exposed
+     * for wrapping and testing; catalog writes go to your own storage, not
+     * through here.
      */
-    db,
+    storage,
   };
 }
 
 export type Commerce = ReturnType<typeof createCommerce>;
+
 
 /** Payment states after which no money will move, so stock can be released. */
 const DEAD_PAYMENT_STATES: readonly PaymentState[] = ["canceled", "expired", "failed"];

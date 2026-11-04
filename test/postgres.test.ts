@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { describeDatabase } from "../src/storage/conformance.ts";
+import { describeDatabase } from "./storage/conformance.ts";
 import { money } from "../src/money.ts";
-import { applyPostgresSchema } from "../src/storage/postgres.ts";
+import { applyPostgresSchema } from "./storage/postgres.ts";
 import { createPglitePostgres } from "./pglite-pool.ts";
 
 // Booting a WebAssembly Postgres takes ~1s, so one instance is shared and

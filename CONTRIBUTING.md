@@ -33,13 +33,39 @@ A feature that is really "my shop needs X" rather than "this lifecycle is
 wrong" probably belongs in your application layer. Open an issue before a large
 PR so we can check the fit first.
 
+## Layout
+
+| Path | What lives there |
+| --- | --- |
+| `src/commerce.ts` | the lifecycle: checkout, reconciliation, refunds, delivery |
+| `src/storage-handlers.ts` | the `CommerceStorage` contract — the only way the library persists anything |
+| `src/schemas.ts`, `src/storage-guards.ts` | the runtime enforcement of that contract |
+| `src/conformance.ts` | `describeCommerceStorage`, published at `mollie-ecommerce/conformance` |
+| `src/mollie.ts`, `src/fake-gateway.ts` | the `PaymentGateway` implementations |
+| `examples/memory-storage.ts` | a complete handler implementation, published for copying |
+| `test/storage/` | in-memory, SQLite and Postgres fixtures — **not shipped** |
+
+## Where the boundary is
+
+`createCommerce` must not touch storage. It calls the `CommerceStorage`
+handlers and nothing else — no transactions, no queries, no store objects. If a
+change needs new persistence behavior, add or widen a handler and document its
+atomicity contract, then cover it in `describeCommerceStorage`.
+
+The adapters under `test/storage/` are fixtures, not shipped code: they exist
+so the lifecycle suite can run against in-memory, SQLite and Postgres storage.
+Nothing in `src/` may import them, and `bun pm pack --dry-run` should never
+list them.
+
 ## Tests
 
 `bun test` must pass, and so must `bun run typecheck`.
 
-- **Lifecycle tests run against every storage adapter.** `src/commerce.test.ts`
-  loops over `InMemoryDatabase`, `SqliteDatabase`, and the Postgres stores; a
-  change that only works on one of them will fail. Postgres runs on PGlite
+- **Lifecycle tests run against every storage back-end.** `test/lifecycle.test.ts`
+  loops over the in-memory, SQLite and Postgres fixtures — all driven through
+  the same handler contract consumers fulfil — and
+  `test/handler-storage.test.ts` runs the lifecycle against
+  `examples/memory-storage.ts`, with no adapter at all. Postgres runs on PGlite
   (`test/pglite-pool.ts`) — a devDependency, never a dependency of the
   library. The instance is shared and truncated per test, since booting a
   WebAssembly Postgres is slow; keep it that way.
@@ -48,28 +74,44 @@ PR so we can check the fit first.
   ports, so the setup documented in the README cannot silently stop compiling.
   `pg` and `@types/pg` are devDependencies for that guard alone — the adapter
   imports no driver.
-- **Storage changes must satisfy the conformance suite.** `describeDatabase` in
-  `src/storage/conformance.ts` is the contract. If you add a port method, add
+- **Storage changes must satisfy the conformance suites.**
+  `describeCommerceStorage` (`src/conformance.ts`) is the published contract;
+  `describeDatabase` (`test/storage/conformance.ts`) covers the fixtures.
+- **The contract is enforced at runtime, so it has to stay true.**
+  `createCommerce` wraps storage in the internal `checkedStorage`
+  unconditionally; a doc change that the schemas and guards don't match will
+  fail real calls.
+- **A contract change is three edits, not one.** Update the JSDoc in
+  `src/storage-handlers.ts`, the zod schema in `src/schemas.ts` (the
+  `satisfies` block there fails the build if a schema drifts from its type),
+  and the checks in `src/storage-guards.ts` — then cover it in
+  `describeCommerceStorage`. If you add a port method, add
   its contract test there — that is what keeps adapters interchangeable.
 - Prefer `FakePaymentGateway` over mocks, and never hit the real Mollie API in
   tests.
+- **A test must be able to fail.** `expect(typeof x).toBe("function")` and
+  `expect(fn).toBeDefined()` pass whatever the code does; if what you mean is a
+  type guarantee, write it as an assignment in a non-test file (see
+  `test/pg-compat.ts`) and let `tsc` enforce it.
 
-## Writing a storage adapter
+## Writing a storage implementation
 
-Implement `Database` from `src/ports.ts`, then point the conformance suite at
-it:
+Fulfil `CommerceStorage` from `src/storage-handlers.ts`, then point the
+conformance suite at it:
 
 ```ts
-import { describeDatabase } from "mollie-ecommerce/storage/conformance";
+import { describeCommerceStorage } from "mollie-ecommerce/conformance";
 
-describeDatabase("mysql", () => new MysqlDatabase({ url: process.env.DATABASE_URL }));
+describeCommerceStorage("mysql", async () => {
+  await reset();
+  return { storage: mysqlStorage, saveSku: (sku) => catalog.save(sku) };
+});
 ```
 
-`src/storage/sqlite.ts` and `src/storage/postgres.ts` are the worked examples,
-and `SCHEMA_SQL` plus the row mappers in `src/storage/rows.ts` do most of the
-mapping for SQL engines — both adapters apply that DDL unchanged. Use
-`aggregateStock` in `reserveStock`/`releaseStock`: repeated SKU ids must consume
-their sum, or the adapter oversells.
+`examples/memory-storage.ts` is the readable reference, and
+`test/storage/postgres.ts` shows the SQL shape — including the single-statement
+reservation. Use `aggregateStock` wherever stock moves: repeated SKU ids must
+consume their sum, or you oversell.
 Adapters for other databases are welcome — in-repo if they need no extra
 dependency, otherwise as your own package.
 

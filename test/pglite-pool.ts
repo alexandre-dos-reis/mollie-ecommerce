@@ -4,8 +4,8 @@ import {
   createPostgresDatabase,
   type PostgresClient,
   type PostgresPool,
-} from "../src/storage/postgres.ts";
-import type { Database } from "../src/ports.ts";
+} from "./storage/postgres.ts";
+import type { Database } from "./storage/ports.ts";
 
 /**
  * Test-only: runs the Postgres adapter against [PGlite](https://pglite.dev),

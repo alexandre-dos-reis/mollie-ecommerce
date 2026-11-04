@@ -1,4 +1,4 @@
-import { CommerceError, versionConflict } from "../errors.ts";
+import { CommerceError, storageError } from "../../src/errors.ts";
 import type {
   Database,
   OrderQuery,
@@ -8,9 +8,9 @@ import type {
   StockChange,
   StockShortage,
   Stores,
-} from "../ports.ts";
-import type { Order, Sku } from "../types.ts";
-import { aggregateStock } from "./stock.ts";
+} from "./ports.ts";
+import type { Order, Sku } from "../../src/types.ts";
+import { aggregateStock } from "../../src/stock.ts";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -151,7 +151,7 @@ export class InMemoryOrderStore implements OrderStore {
       throw new CommerceError("order_not_found", `no order ${order.id}`, { orderId: order.id });
     }
     if (current.version !== order.version) {
-      throw versionConflict(order.id, order.version, current.version);
+      throw storageError.versionConflict(order.id, order.version, current.version);
     }
     const stored = { ...clone(order), version: current.version + 1 };
     this.orders.set(stored.id, stored);

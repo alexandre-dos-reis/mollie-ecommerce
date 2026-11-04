@@ -1,35 +1,32 @@
 /**
- * Runnable walkthrough of the whole lifecycle, against the fake gateway and an
- * in-memory database — no Mollie account, no database, no network.
+ * Runnable walkthrough of the whole lifecycle — no Mollie account, no
+ * database, no network.
  *
  *   bun run example
  *
- * Swap `FakePaymentGateway` for `createMollieGateway({ apiKey })` and
- * `InMemoryDatabase` for `SqliteDatabase` or the Postgres stores to make it
- * real.
+ * The library ships no storage adapters: it calls the seven
+ * {@link CommerceStorage} handlers and leaves persistence to you. Here they
+ * are fulfilled by `./memory-storage.ts`, two maps in ~140 readable lines.
+ * Replace that with your database and swap `FakePaymentGateway` for
+ * `createMollieGateway({ apiKey })` to make it real.
  */
-import {
-  createCommerce,
-  FakePaymentGateway,
-  formatMoney,
-  InMemoryDatabase,
-  money,
-} from "../src/index.ts";
+import { createCommerce, FakePaymentGateway, formatMoney, money } from "../src/index.ts";
+import { createMemoryStorage } from "./memory-storage.ts";
 
 const gateway = new FakePaymentGateway();
-const db = new InMemoryDatabase();
+const { storage, saveSku, skus } = createMemoryStorage();
 
 const commerce = createCommerce({
   gateway,
-  db,
+  storage,
   redirectUrl: "https://shop.example/thanks",
   webhookUrl: "https://shop.example/mollie-webhook",
 });
 
-// 1. Catalog. One SKU per purchasable variant: the T-shirt comes in two, and
-//    `productId` groups them so you can still ask "which T-shirt SKUs exist?".
-//    Size and colour are your catalog's vocabulary — the library never sees them.
-await db.skus.save({
+// 1. Catalog — yours, not the library's. One SKU per purchasable variant: the
+//    T-shirt has two, grouped by `productId`. Size and colour are your
+//    vocabulary; the library only sees an id, a price and a stock count.
+await saveSku({
   id: "tshirt-red-m",
   name: "T-shirt — Red / M",
   kind: "physical",
@@ -37,7 +34,7 @@ await db.skus.save({
   stock: 10,
   productId: "tshirt",
 });
-await db.skus.save({
+await saveSku({
   id: "tshirt-blue-l",
   name: "T-shirt — Blue / L",
   kind: "physical",
@@ -45,15 +42,12 @@ await db.skus.save({
   stock: 2,
   productId: "tshirt",
 });
-await db.skus.save({
+await saveSku({
   id: "handbook",
   name: "The Mollie Handbook (ebook)",
   kind: "digital",
   price: money(900, "EUR"),
 });
-
-const variants = await db.skus.list({ productId: "tshirt" });
-console.log(`tshirt variants: ${variants.map((sku) => sku.id).join(", ")}`);
 
 // 2. Checkout. Send the customer to `checkoutUrl`.
 const { order, checkoutUrl } = await commerce.checkout({
@@ -62,7 +56,7 @@ const { order, checkoutUrl } = await commerce.checkout({
   idempotencyKey: "cart-42",
 });
 console.log(`order ${order.id} · ${formatMoney(order.total)} · pay at ${checkoutUrl}`);
-console.log(`red/M stock after reservation: ${(await db.skus.get("tshirt-red-m"))?.stock}`);
+console.log(`red/M stock after reservation: ${skus.get("tshirt-red-m")?.stock}`);
 
 // Retrying the same cart returns the same order instead of charging twice.
 const retry = await commerce.checkout({
@@ -71,12 +65,12 @@ const retry = await commerce.checkout({
 });
 console.log(`replayed=${retry.replayed} sameOrder=${retry.order.id === order.id}`);
 
-// Overselling one variant never touches its siblings.
+// Overselling one variant never touches its siblings, and stores no order.
 try {
   await commerce.checkout({ items: [{ skuId: "tshirt-blue-l", quantity: 3 }] });
 } catch (error) {
   console.log(`blue/L refused: ${(error as Error).message}`);
-  console.log(`blue/L stock untouched: ${(await db.skus.get("tshirt-blue-l"))?.stock}`);
+  console.log(`blue/L stock untouched: ${skus.get("tshirt-blue-l")?.stock}`);
 }
 
 // 3. The customer pays. Mollie would call your webhook; the fake needs a nudge.
@@ -101,13 +95,13 @@ const { order: refunded, refund } = await commerce.refund({
 });
 console.log(
   `refunded ${formatMoney(refund.amount)} → ${refunded.payment.state} ` +
-    `(${formatMoney(refunded.payment.amountRefunded)} of ${formatMoney(refunded.total)})`,
+  `(${formatMoney(refunded.payment.amountRefunded)} of ${formatMoney(refunded.total)})`,
 );
 
-// 6. Take the goods back, and the stock with them.
+// 6. Take the goods back, and the stock with them — one atomic mutation.
 const returned = await commerce.markReturned({ orderId: order.id, restock: true });
 console.log(
-  `delivery ${returned.delivery.state}, red/M stock ${(await db.skus.get("tshirt-red-m"))?.stock}`,
+  `delivery ${returned.delivery.state}, red/M stock ${skus.get("tshirt-red-m")?.stock}`,
 );
 console.log(
   `paid orders: ${(await commerce.findOrders({ paymentState: ["paid", "partially_refunded"] })).length}`,

@@ -22,8 +22,9 @@ body:
     attributes:
       label: Reproduction
       description: >
-        Ideally a snippet using `FakePaymentGateway` and `InMemoryDatabase`, so
-        it runs without a Mollie account. See `examples/quickstart.ts`.
+        Ideally a snippet using `FakePaymentGateway` and the storage from
+        `examples/memory-storage.ts`, so it runs without a Mollie account or a
+        database. See `examples/quickstart.ts`.
       render: typescript
     validations:
       required: true
@@ -44,5 +45,7 @@ body:
   - type: input
     id: storage
     attributes:
-      label: Storage adapter
-      description: InMemoryDatabase, SqliteDatabase, or your own.
+      label: Storage
+      description: >
+        How you fulfil the handlers — the memory example, Postgres, Prisma,
+        something else.

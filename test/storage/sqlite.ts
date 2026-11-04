@@ -1,5 +1,5 @@
 import { Database as Sqlite } from "bun:sqlite";
-import { CommerceError, versionConflict } from "../errors.ts";
+import { CommerceError, storageError } from "../../src/errors.ts";
 import type {
   Database,
   OrderQuery,
@@ -9,9 +9,9 @@ import type {
   StockChange,
   StockShortage,
   Stores,
-} from "../ports.ts";
-import type { Order, Sku } from "../types.ts";
-import { aggregateStock } from "./stock.ts";
+} from "./ports.ts";
+import type { Order, Sku } from "../../src/types.ts";
+import { aggregateStock } from "../../src/stock.ts";
 import {
   orderToRow,
   skuToRow,
@@ -234,7 +234,7 @@ export class SqliteOrderStore implements OrderStore {
       if (!current) {
         throw new CommerceError("order_not_found", `no order ${order.id}`, { orderId: order.id });
       }
-      throw versionConflict(order.id, order.version, current.version);
+      throw storageError.versionConflict(order.id, order.version, current.version);
     }
     return stored;
   }

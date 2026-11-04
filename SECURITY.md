@@ -22,11 +22,16 @@ knowing about when you review your own integration:
   your HTTP edge is still worthwhile, but it is not what protects order state.
 - **Refunds are bounded** by `total − amountRefunded`, server-side, so a
   tampered client cannot over-refund.
-- **Stock reservation is atomic** (`reserveStock` is all-or-nothing) and order
-  writes use optimistic concurrency, so concurrent checkouts cannot oversell
-  and concurrent updates cannot silently overwrite each other. A custom storage
-  adapter must preserve both — run `describeDatabase` against it.
+- **Stock reservation and order writes are atomic by contract.** `createOrder`
+  takes stock and stores the order together or not at all, and `mutateOrder`
+  writes with the version it read, so concurrent checkouts cannot oversell and
+  concurrent updates cannot silently overwrite each other. Both guarantees live
+  in *your* storage implementation, which is why they are worth checking: run
+  `describeCommerceStorage` from `mollie-ecommerce/conformance` against it. The
+  library also validates every value crossing that boundary at runtime, so a
+  drifting implementation fails loudly rather than corrupting orders.
 - **Your Mollie API key** is read from `MOLLIE_API_KEY` or passed explicitly;
-  it is never logged. `CommerceError` details can include order and product
-  ids, so treat error payloads as internal rather than returning them verbatim
-  to customers.
+  it is never logged. `CommerceError` details can include order and SKU ids,
+  and a `cause` may carry a driver error with connection details, so treat
+  error payloads as internal rather than returning them verbatim to customers.
+  `onStorageError` is a convenient place to strip them.

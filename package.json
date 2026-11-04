@@ -1,7 +1,7 @@
 {
   "name": "mollie-ecommerce",
-  "version": "0.3.0",
-  "description": "A SKU, order and delivery lifecycle layer over Mollie \u2014 the minimum an ecommerce flow needs.",
+  "version": "0.4.0",
+  "description": "A SKU, order and delivery lifecycle layer over Mollie — the minimum an ecommerce flow needs.",
   "keywords": [
     "mollie",
     "ecommerce",
@@ -13,8 +13,6 @@
     "variants",
     "inventory",
     "fulfillment",
-    "postgres",
-    "sqlite",
     "bun",
     "typescript"
   ],
@@ -32,15 +30,12 @@
   "module": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./storage/memory": "./src/storage/memory.ts",
-    "./storage/sqlite": "./src/storage/sqlite.ts",
-    "./storage/postgres": "./src/storage/postgres.ts",
-    "./storage/rows": "./src/storage/rows.ts",
-    "./storage/conformance": "./src/storage/conformance.ts"
+    "./conformance": "./src/conformance.ts"
   },
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "examples/memory-storage.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -55,7 +50,8 @@
     "example": "bun run examples/quickstart.ts"
   },
   "dependencies": {
-    "mollie-api-typescript": "^1.12.44"
+    "mollie-api-typescript": "^1.12.44",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "typescript": ">=5.5"
