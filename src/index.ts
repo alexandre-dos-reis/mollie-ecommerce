@@ -15,6 +15,10 @@ export * from "./fake-gateway.ts";
 export { createMollieGateway, toSnapshot } from "./mollie.ts";
 export type { MollieGatewayOptions } from "./mollie.ts";
 
+// The Mollie webhook handler lives on its own entry, `mollie-ecommerce/http`,
+// so this one stays free of HTTP: `createWebhookHandler` is a convenience over
+// `commerce.handleWebhook(paymentId)`, which remains the operation.
+
 // No database adapters are published: storage is yours to fulfil. See
 // `CommerceStorage`, `examples/memory-storage.ts` for a minimal
 // implementation, and `mollie-ecommerce/conformance` to verify your own.

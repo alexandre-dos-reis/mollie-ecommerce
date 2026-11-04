@@ -20,14 +20,15 @@ bun add mollie-ecommerce
 Ships as ESM with type declarations, so Node 20+, Bun, Deno and bundlers all
 work. Two runtime dependencies: the Mollie SDK and [zod](https://zod.dev).
 
-One exception: `mollie-ecommerce/conformance` — the contract test suite for
-your storage — builds on `bun:test`, so that entry point needs
-[Bun](https://bun.com).
+Two more entry points, both optional: `mollie-ecommerce/http` for the Mollie
+webhook handler, and `mollie-ecommerce/conformance` for the contract test suite
+for your storage. The conformance entry builds on `bun:test`, so it needs
+[Bun](https://bun.com); the main and `http` entries do not.
 
 ```bash
 # Working on the library itself
 bun install
-bun run check     # typecheck + 161 tests
+bun run check     # typecheck + 172 tests
 bun run build     # bundle dist/ with tsdown
 bun run example   # the full lifecycle, no Mollie account needed
 ```
@@ -194,6 +195,11 @@ order up by payment id, then does the same work as `syncOrder`. Returns `null`
 for a payment this shop doesn't know — respond 2xx anyway, or Mollie retries
 forever. The state always comes from the API, never from the request body.
 
+This is the commerce operation; `createWebhookHandler` from
+`mollie-ecommerce/http` turns it into an HTTP handler with the status codes and
+the duplicate-delivery retry already handled. See
+[the webhook](#2-the-mollie-webhook).
+
 ### `refund(input) → { order, refund }`
 
 Refunds a paid order: in full, by amount, or by line. Moves money only — see
@@ -359,26 +365,62 @@ function customerMessage(error: CommerceError): string {
 
 Mollie posts `id=tr_...` form-encoded and nothing else — no status, so the
 state has to come from the API, which is exactly what `handleWebhook` does.
-Two rules matter: **always answer 2xx** (any other status makes Mollie retry,
-forever for a payment you will never recognize), and **answer fast** — do your
-own slow work (emails, invoices, ERP calls) after responding.
+`mollie-ecommerce/http` wraps it in a `Request → Response` handler that carries
+the parts every integration has to get right the same way:
 
 ```ts
+import { createWebhookHandler } from "mollie-ecommerce/http";
 import { commerce } from "./shop.ts";
+import { queue } from "./queue.ts";
 
-export async function postMollieWebhook(request: Request): Promise<Response> {
-  const form = await request.formData();
-  const paymentId = String(form.get("id") ?? "");
-  if (!paymentId) return new Response("missing id", { status: 400 });
-
-  const order = await commerce.handleWebhook(paymentId);
-  if (!order) return new Response("ok"); // not ours — still 200
-  if (order.payment.state === "paid" && order.delivery.state === "ready") {
-    queue.push({ type: "order.paid", orderId: order.id }); // email, invoice, picking slip
-  }
-  return new Response("ok");
-}
+export const postMollieWebhook = createWebhookHandler({
+  commerce,
+  // Enqueue only — Mollie is waiting. Emails, invoices and ERP calls happen
+  // after the response, in your worker.
+  onOrder: (order) => {
+    if (order.payment.state === "paid") {
+      queue.push({ type: "order.paid", orderId: order.id });
+    }
+  },
+  onError: (error, { paymentId, status }) =>
+    log.error({ err: error, paymentId, willRetry: status >= 500 }, "mollie webhook"),
+});
 ```
+
+It is a plain `(Request) => Promise<Response>`, so routing stays yours:
+
+```ts
+Bun.serve({ routes: { "/mollie-webhook": { POST: postMollieWebhook } } });
+app.post("/mollie-webhook", (c) => postMollieWebhook(c.req.raw));   // Hono
+export { postMollieWebhook as POST };                              // Next.js route file
+```
+
+For a `req`/`res` framework like Express, skip the handler and call
+`commerce.handleWebhook(paymentId)` directly — it stays the operation, and the
+handler is only a convenience over it.
+
+**What the handler decides for you.** To Mollie, 2xx means "absorbed, stop" and
+anything else means "retry", so the status is not a formality — it is how a
+payment either converges or gets silently dropped:
+
+| Situation | Answer | Why |
+| --- | --- | --- |
+| no `id` in the body | 200 | not Mollie, or a probe; retrying conjures nothing |
+| payment unknown here | 200 | a non-2xx retries forever for an order that will never exist |
+| `order_not_found` | 200 | the order vanished mid-flight; no state left to converge on |
+| `gateway_error`, `storage_error` | 503 | transient — the redelivery *is* the recovery |
+| `version_conflict` | retried, then 503 | a duplicate delivery won the write race |
+| `storage_contract`, anything else | 500 | a bug; Mollie's remaining retries recover it once fixed |
+
+That last distinction is the one worth internalising even if you route the
+webhook yourself: answering 2xx to a database blip tells Mollie the payment was
+handled and you will never hear about it again.
+
+Two more Mollie facts the handler folds in. **There is nothing to verify** —
+Mollie does not sign webhooks, which is why the state is re-read from the API
+instead; a forged body cannot move an order. And **refunds and chargebacks
+arrive on this same route**, carrying the same payment id, so one route is all
+you need.
 
 Mollie cannot reach `localhost`, so tunnel the URL in development
 (`bunx untun tunnel http://localhost:3000`, ngrok, or Cloudflare Tunnel) and
@@ -1109,6 +1151,7 @@ how you find out whether yours still conforms.
 - **Digital orders self-deliver.** No physical lines means `delivered` on payment. Disable with `autoDeliverDigital: false`.
 - **Refund state is optimistic.** Mollie returns `pending`; `syncOrder` reconciles `amountRefunded` from the payment.
 - **The webhook URL must be publicly reachable.** Mollie cannot call `localhost`; tunnel it in development.
+- **Webhook status codes are load-bearing.** 2xx means "absorbed", anything else means "retry", so a transient failure answered 2xx drops the payment. `createWebhookHandler` maps them for you.
 - **No expiry sweeper.** Mollie expires unpaid payments and calls your webhook. To free stock sooner, run `findOrders({ paymentState: ["created", "open", "pending"] })` on a schedule and call `syncOrder`.
 
 ## Contributing
