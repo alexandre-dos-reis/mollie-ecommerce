@@ -20,17 +20,19 @@ import type { Order, Sku } from "./types.ts";
 
 /* -------------------------------------------------------- contract checks */
 
+/** Marks an already-wrapped storage, so wrapping twice costs nothing. */
+const CHECKED = Symbol.for("mollie-ecommerce.checkedStorage");
+
 /**
  * Wraps storage handlers so every argument and return value is validated
  * against the documented contract, and a violation fails loudly at the call
  * site instead of corrupting an order three steps later.
  *
- * ```ts
- * const commerce = createCommerce({
- *   gateway,
- *   storage: process.env.NODE_ENV === "production" ? myStorage : checkedStorage(myStorage),
- * });
- * ```
+ * **`createCommerce` applies this to your storage automatically** — the
+ * contract is always enforced, not something to remember. You only need to
+ * call it yourself to check a storage outside the commerce layer, such as in
+ * your own tests. Wrapping an already-wrapped storage returns it unchanged, so
+ * doing both costs nothing.
  *
  * It checks shapes with {@link ../schemas.ts zod schemas} and also the things
  * a schema cannot express: that `loadSkus` returns only SKUs that were asked
@@ -43,12 +45,13 @@ import type { Order, Sku } from "./types.ts";
  * your handlers throw are passed through too; only a thrown `out_of_stock` is
  * inspected, since its shortages are part of the contract.
  *
- * Keep it on in development, tests and CI. It is cheap next to a database
- * round trip, so leaving it on in production is a reasonable trade for the
- * earlier failure; `describeCommerceStorage` applies it for you.
+ * Validating one order costs roughly 2µs, which is noise beside the database
+ * round trip that produced it.
  */
 export function checkedStorage(storage: CommerceStorage): CommerceStorage {
-  return {
+  if (isChecked(storage)) return storage;
+
+  const checked: CommerceStorage = {
     async loadSkus(ids: string[]): Promise<Sku[]> {
       check("loadSkus", "arguments", z.array(z.string()), ids);
       const skus = await storage.loadSkus(ids);
@@ -147,6 +150,10 @@ export function checkedStorage(storage: CommerceStorage): CommerceStorage {
     },
   };
 
+
+  Object.defineProperty(checked, CHECKED, { value: true, enumerable: false });
+  return checked;
+
   async function readOrder(
     handler: string,
     key: string,
@@ -157,6 +164,11 @@ export function checkedStorage(storage: CommerceStorage): CommerceStorage {
     if (order !== null) check(handler, "return value", OrderSchema, order);
     return order;
   }
+}
+
+/** True when {@link checkedStorage} already wrapped this storage. */
+export function isChecked(storage: CommerceStorage): boolean {
+  return (storage as unknown as Record<PropertyKey, unknown>)[CHECKED] === true;
 }
 
 function check(handler: string, what: string, schema: z.ZodType, value: unknown): void {

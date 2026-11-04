@@ -621,30 +621,24 @@ Four things that make these transactions cheap to run:
   single guarded SQL statement (see [Reference schema](#reserving-stock-in-one-statement)),
   a document update, or a compare-and-swap retry loop.
 
-### Checking the contract at runtime
+### The contract is checked at runtime
 
-The contract is only worth as much as its enforcement, so wrap your storage in
-`checkedStorage` and every argument and return value is validated against it:
-
-```ts
-import { checkedStorage } from "mollie-ecommerce";
-
-const commerce = createCommerce({
-  gateway,
-  storage: checkedStorage(myStorage), // validated in both directions
-});
-```
-
-A violation throws `CommerceError("storage_contract")` at the call that caused
-it, naming the handler and the field:
+`createCommerce` validates every argument and return value crossing the
+boundary — always, with nothing to switch on. A handler that drifts from the
+contract fails at the call that broke it, naming the handler and the field:
 
 ```
 mutateOrder return value does not match the storage contract —
   total.cents: Invalid input: expected int, received number
 ```
 
-It uses [zod](https://zod.dev) schemas for shapes, and also checks the things a
-schema cannot express:
+The alternative is a float reaching a `total`, or a lost write quietly
+returning the version it was handed, and surfacing three steps later as a wrong
+order. Validating one order costs about **2µs** — noise beside the database
+round trip that produced it.
+
+It uses [zod](https://zod.dev) for shapes, plus the things a schema cannot
+express:
 
 | Handler | Also checked |
 | --- | --- |
@@ -652,14 +646,20 @@ schema cannot express:
 | `createOrder` | returns the order it was given, with a version of at least 1; an `out_of_stock` result names at least one shortage |
 | `mutateOrder` | calls the mutator, is handed the order it was asked for, and returns a *higher* version than it started with — a silent lost write is otherwise invisible |
 
-Validated values pass through **unchanged**: the original object is returned,
-never zod's parsed copy, so nothing is stripped or coerced.
+Two things it deliberately does not do: values pass through **unchanged** (the
+original object, never zod's parsed copy, so nothing is stripped or coerced),
+and errors your handlers throw pass through untouched — only a thrown
+`out_of_stock` is inspected, since its shortages are part of the contract.
 
-Keep it on in development, tests and CI. It costs far less than the database
-round trip beside it, so leaving it on in production is a reasonable trade for
-failing early instead of corrupting an order three steps later.
-`describeCommerceStorage` applies it to whatever you hand it, so the
-conformance suite checks shapes as well as behavior.
+`checkedStorage` is exported if you want to check a storage outside the
+commerce layer, say in your own tests. Wrapping an already-wrapped storage
+returns it unchanged, so it is safe to use alongside `createCommerce`:
+
+```ts
+import { checkedStorage } from "mollie-ecommerce";
+
+const storage = checkedStorage(myStorage); // same checks, used directly
+```
 
 The schemas are exported too — `OrderSchema`, `SkuSchema`, `MoneySchema` and
 the rest — which is handy on your side of the line for validating rows you
@@ -765,6 +765,9 @@ const commerce = createCommerce({
 | nothing | the original error, unchanged; you have only observed it |
 | (you throw) | whatever you threw |
 
+Contract violations (`storage_contract`) come through here as well, since the
+hook sits outside the checks.
+
 The context tells you which handler failed and what it was working on:
 `orderId` for order-scoped calls, `skuIds` for `loadSkus`, `key` for the
 lookups. Translating is worth doing for the two codes the library acts on:
@@ -848,8 +851,8 @@ const commerce = createCommerce({
 });
 ```
 
-Then hold your implementation to the contract — these run it through
-`checkedStorage` as well, so shapes are verified alongside behavior:
+Then hold your implementation to the contract — the suite checks shapes
+alongside behavior, the same way `createCommerce` does:
 
 ```ts
 import { describeCommerceStorage } from "mollie-ecommerce/conformance";

@@ -65,6 +65,9 @@ list them.
 - **Storage changes must satisfy the conformance suites.**
   `describeCommerceStorage` (`src/conformance.ts`) is the published contract;
   `describeDatabase` (`test/storage/conformance.ts`) covers the fixtures.
+- **The contract is enforced at runtime, so it has to stay true.**
+  `createCommerce` wraps storage in `checkedStorage` unconditionally; a doc
+  change that the schemas and guards don't match will fail real calls.
 - **A contract change is three edits, not one.** Update the JSDoc in
   `src/storage-handlers.ts`, the zod schema in `src/schemas.ts` (the
   `satisfies` block there fails the build if a schema drifts from its type),

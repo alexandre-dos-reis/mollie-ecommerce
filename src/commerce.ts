@@ -13,7 +13,11 @@ import {
   type StockChange,
 } from "./ports.ts";
 import type { CommerceStorage, OrderMutation } from "./storage-handlers.ts";
-import { withStorageErrorHandler, type StorageErrorHandler } from "./storage-guards.ts";
+import {
+  checkedStorage,
+  withStorageErrorHandler,
+  type StorageErrorHandler,
+} from "./storage-guards.ts";
 import {
   isPaid,
   refundableAmount,
@@ -38,14 +42,16 @@ export type CommerceOptions = {
    * The storage handlers to fulfil. See {@link CommerceStorage} — seven
    * functions, with no transactions or queries on this side of the boundary.
    *
-   * Wrap it in `checkedStorage` to have every argument and return value
-   * validated against the contract.
+   * Every argument and return value is validated against the contract (see
+   * `checkedStorage`), so a handler that drifts fails immediately and says
+   * which field was wrong.
    */
   storage: CommerceStorage;
   /**
    * Called when a storage handler throws, before the error reaches your
    * caller. Return a {@link CommerceError} to translate it, return nothing to
-   * just observe it, or throw your own.
+   * just observe it, or throw your own. Contract violations
+   * (`storage_contract`) pass through here as well.
    *
    * ```ts
    * onStorageError: (error, { handler, orderId }) => {
@@ -188,9 +194,13 @@ export function createCommerce(options: CommerceOptions) {
     reserveStock: shouldReserveStock = true,
   } = options;
 
+  // The contract is always enforced: a handler that breaks it fails at the
+  // call that broke it, rather than corrupting an order further along.
+  // `onStorageError` sits outside, so it sees contract violations too.
+  const checked = checkedStorage(options.storage);
   const storage = options.onStorageError
-    ? withStorageErrorHandler(options.storage, options.onStorageError)
-    : options.storage;
+    ? withStorageErrorHandler(checked, options.onStorageError)
+    : checked;
   const now = () => clock.now().toISOString();
 
   /* ------------------------------------------------------------- internals */

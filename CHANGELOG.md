@@ -30,15 +30,19 @@ is yours — your migrations, your pool, your naming.
   to get subtly wrong: a shortage must not persist the order, `releaseStock`
   must land in the same write as its mutation, and a throwing mutator must
   leave nothing behind.
-- `checkedStorage(storage)` — wraps the handlers so every argument and return
-  value is validated against the contract with [zod](https://zod.dev), failing
-  at the offending call with `CommerceError("storage_contract")` instead of
-  corrupting an order later. It also checks what a schema cannot express:
+- **Runtime contract enforcement, always on.** `createCommerce` validates every
+  argument and return value crossing the storage boundary with
+  [zod](https://zod.dev), failing at the offending call with
+  `CommerceError("storage_contract")` instead of corrupting an order later.
+  Roughly 2µs per order, and nothing to switch on. It also checks what a schema
+  cannot express:
   `loadSkus` returning only requested SKUs and none twice, `createOrder`
   returning the order it was given with a version, and `mutateOrder` calling
   the mutator and returning a *higher* version — a silent lost write is
   otherwise invisible. Validated values pass through unchanged, never zod's
-  parsed copy. `describeCommerceStorage` applies it automatically.
+  parsed copy. `checkedStorage` is exported for checking a storage outside the
+  commerce layer and is idempotent, so wrapping twice costs nothing;
+  `describeCommerceStorage` applies it too.
 - Exported zod schemas for everything crossing the boundary — `OrderSchema`,
   `SkuSchema`, `MoneySchema`, `OrderQuerySchema` and the rest — useful for
   validating rows you rebuilt from JSON columns. A compile-time check keeps
@@ -48,7 +52,8 @@ is yours — your migrations, your pool, your naming.
   translate a driver error into the library's vocabulary (a serialization
   failure into `version_conflict`, a unique violation into `duplicate_order`),
   return nothing to observe only, or throw your own. The context names the
-  handler and what it was working on. It cannot swallow an error.
+  handler and what it was working on, including contract violations. It cannot
+  swallow an error.
 - `storageError` — helpers for the errors a handler is expected to raise:
   `outOfStock`, `orderNotFound`, `versionConflict`, `duplicateOrder` and
   `failed`, so handlers speak the same vocabulary as the rest of the library

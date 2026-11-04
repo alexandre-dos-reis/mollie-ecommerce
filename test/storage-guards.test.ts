@@ -6,6 +6,7 @@ import { FakePaymentGateway } from "../src/fake-gateway.ts";
 import { money } from "../src/money.ts";
 import {
   checkedStorage,
+  isChecked,
   withStorageErrorHandler,
   type StorageErrorContext,
 } from "../src/storage-guards.ts";
@@ -265,4 +266,53 @@ test("the whole lifecycle passes its own arguments through the checks", async ()
 
   expect(returned.delivery.state).toBe("returned");
   expect(skus.get("mug")?.stock).toBe(10);
+});
+
+/* ------------------------------------------------- always on, not opt in */
+
+test("createCommerce validates storage without being asked to", async () => {
+  const { storage, saveSku } = createMemoryStorage();
+  await saveSku(mug);
+
+  // Raw storage, no checkedStorage() at the call site.
+  const commerce = createCommerce({
+    gateway: new FakePaymentGateway(),
+    storage: {
+      ...storage,
+      loadSkus: async () => [{ ...mug, price: { cents: 12.5, currency: "EUR" } }],
+    },
+  });
+
+  const failure = commerce.checkout({ items: [{ skuId: "mug" }] });
+  await expect(failure).rejects.toMatchObject({ code: "storage_contract" });
+  await expect(failure).rejects.toThrow(/price\.cents/);
+});
+
+test("wrapping an already-checked storage is a no-op", () => {
+  const { storage } = createMemoryStorage([mug]);
+  const once = checkedStorage(storage);
+
+  expect(isChecked(storage)).toBe(false);
+  expect(isChecked(once)).toBe(true);
+  // So following the docs *and* passing to createCommerce costs nothing twice.
+  expect(checkedStorage(once)).toBe(once);
+});
+
+test("onStorageError sees contract violations too", async () => {
+  const { storage, saveSku } = createMemoryStorage();
+  await saveSku(mug);
+  const seen: StorageErrorContext[] = [];
+
+  const commerce = createCommerce({
+    gateway: new FakePaymentGateway(),
+    storage: { ...storage, findOrder: async () => ({ id: "ord_1" }) as unknown as Order },
+    onStorageError: (error, context) => {
+      seen.push(context);
+      expect(error).toBeInstanceOf(CommerceError);
+      expect((error as CommerceError).code).toBe("storage_contract");
+    },
+  });
+
+  await expect(commerce.getOrder("ord_1")).rejects.toMatchObject({ code: "storage_contract" });
+  expect(seen).toEqual([{ handler: "findOrder", orderId: "ord_1" }]);
 });

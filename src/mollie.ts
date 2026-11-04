@@ -33,7 +33,7 @@ export function createMollieGateway(options: MollieGatewayOptions = {}): Payment
   const client =
     options.client ??
     new MollieClient({
-      security: { apiKey: options.apiKey ?? process.env.MOLLIE_API_KEY ?? "" },
+      security: { apiKey: options.apiKey ?? "" },
     });
   const maxDescription = options.maxDescriptionLength ?? 255;
   const sendLines = options.sendLines ?? true;

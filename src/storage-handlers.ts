@@ -43,8 +43,11 @@ import type { Order, Sku } from "./types.ts";
  *   the library only reads them — apart from the stock column, which the two
  *   write handlers move for you.
  *
- * `describeCommerceStorage` in `mollie-ecommerce/storage/conformance` tests an
- * implementation against this contract.
+ * This contract is enforced at runtime: `createCommerce` validates every
+ * argument and return value, so a handler that breaks it throws
+ * `CommerceError("storage_contract")` naming the handler and field rather than
+ * corrupting an order later. `describeCommerceStorage` in
+ * `mollie-ecommerce/conformance` tests an implementation against it up front.
  */
 export interface CommerceStorage {
   /**
