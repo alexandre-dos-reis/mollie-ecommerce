@@ -151,22 +151,51 @@ What changed, and why it matters to someone using the library.
 
 ## Releasing
 
-Maintainers, from a green `main`:
+Releases are automated, and the only manual step is merging a PR.
 
-```bash
-bun run version   # consume the changesets: bump package.json, write CHANGELOG.md
-git commit -am "release: v$(node -p "require('./package.json').version")"
-bun run release   # typecheck + tests, then publish to npm and tag the commit
-git push --follow-tags
-```
+1. **Changesets accumulate** on `main` as PRs merge.
+2. **CI runs.** If it fails, nothing else happens — the release workflow is
+   triggered by CI's success on `main`, not by the push.
+3. **A release PR appears** (or updates), titled `release: version packages`.
+   It applies the pending changesets: one version bump, one changelog section.
+4. **You merge it.** CI runs again on `main`, and this time there are no
+   changesets left, so the workflow publishes to npm and pushes the `vX.Y.Z`
+   tag.
 
-`bun run release` refuses to publish if `bun run check` fails, and
-`changeset publish` creates the `vX.Y.Z` tag for you. Finish by publishing the
-GitHub release with that version's changelog section as its notes:
+Then write up the GitHub release from that version's changelog section:
 
 ```bash
 gh release create "v$(node -p "require('./package.json').version")" --latest --generate-notes
 ```
 
-npm auth comes from your own npm login; nothing in CI publishes, and there is
-no token stored in the repo.
+The release PR itself shows no checks, because commits made with
+`GITHUB_TOKEN` do not trigger workflows. That is fine: its contents are a
+version bump and a changelog, and CI runs on `main` both before the PR is
+created and after it is merged.
+
+### npm credentials
+
+The workflow needs one of these, or publishing fails with `ENEEDAUTH`:
+
+- **Trusted publishing** (no secret): on npmjs.com, under the package's
+  *Settings → Trusted publisher*, add this repository with workflow
+  `release.yml`. GitHub's OIDC token then authenticates the publish, which is
+  why the workflow requests `id-token: write`.
+- **Automation token**: create a *Granular access token* with the **Automation**
+  setting — plain publish tokens are rejected by two-factor authentication —
+  and store it as the `NPM_TOKEN` repository secret.
+
+Either way the publish is signed with provenance, since `id-token: write` and
+`NPM_CONFIG_PROVENANCE` are set.
+
+### Publishing by hand
+
+Still possible, and the fallback if the workflow is wedged. Two-factor
+authentication will prompt for a one-time password:
+
+```bash
+bun run version                        # apply pending changesets
+git commit -am "release: version packages"
+bun run release                        # check, build, publish, tag
+git push --follow-tags
+```

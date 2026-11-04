@@ -1113,9 +1113,14 @@ how you find out whether yours still conforms.
 
 ## Contributing
 
-Bug reports, storage adapters, and documentation fixes are all welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md). Security issues go through
+Bug reports, storage implementations, and documentation fixes are all welcome —
+see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go through
 [SECURITY.md](SECURITY.md), not the public tracker.
+
+Releases are automated: every change carries a
+[changeset](https://github.com/changesets/changesets), those collect into a
+`release: version packages` PR, and merging it publishes to npm — but only once
+CI is green on `main`.
 
 ## License
 
