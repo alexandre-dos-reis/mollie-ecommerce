@@ -159,7 +159,8 @@ export type ReturnInput = {
  * ```
  *
  * Every method throws {@link CommerceError} with a machine-readable `code`.
- * No gateway call happens inside a database transaction.
+ * No gateway call happens inside a storage write handler, so the transactions
+ * you open there stay short.
  */
 export function createCommerce(options: CommerceOptions) {
   const {

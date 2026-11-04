@@ -486,6 +486,138 @@ commerce layer relies on atomicity.
 Everything else — pricing, state machines, stock bookkeeping, payment
 reconciliation, timestamps — stays on the library's side of the line.
 
+### What goes in each handler
+
+Handlers are persistence, and nothing else. The library decides *what* changed;
+you decide *where it lands* — including in tables it has never heard of.
+
+| Handler | Called when | What you do | Your tables it may touch |
+| --- | --- | --- | --- |
+| `loadSkus` | start of every `checkout` | Read the SKUs by id and return them in the library's shape. Return what you have; don't filter out inactive or out-of-stock ones — the library reports `sku_inactive` and `out_of_stock` itself. | your catalog: `skus`/`variants`, joined to `products`, price lists, per-currency prices |
+| `createOrder` | `checkout`, after pricing | Insert the order, decrement stock, commit both together. Normalize however you like — a child `order_lines` table instead of JSON is fine, as long as the order reads back the same. | `orders`, `order_lines`, `inventory`, plus an outbox/audit row if you use one |
+| `mutateOrder` | every later change: payment reconciliation, refunds, each delivery transition, cancellation | Read the order, run `apply`, persist it with any `releaseStock`. This is the one place order state changes, so it is the natural home for history and audit rows. | `orders`, `order_lines`, `refunds`, `order_events`/status history, `inventory`, outbox |
+| `findOrder` | `getOrder`, `syncOrder`, `refund`, `cancelOrder` | Read one order by id. | `orders` (+ joins to rebuild it) |
+| `findOrderByPaymentId` | `handleWebhook` | Read one order by `payment.id`. | `orders` |
+| `findOrderByIdempotencyKey` | `checkout` with a key | Read one order by that key. | `orders` |
+| `listOrders` | `findOrders` | Apply the filters you are given and sort oldest-created first. | `orders` |
+
+Writing to your own tables inside a write handler is encouraged — that is the
+point of owning persistence. A `mutateOrder` that also records history and
+restocks your own inventory table:
+
+```ts
+async mutateOrder(orderId, apply) {
+  return db.transaction(async (tx) => {
+    const order = await tx.loadOrder(orderId);
+    if (!order) throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
+
+    const before = { payment: order.payment.state, delivery: order.delivery.state };
+    const { releaseStock = [] } = (await apply(order)) ?? {};
+
+    // 1. your inventory table, in the same commit as the order
+    for (const item of releaseStock) {
+      await tx.inventory.increment(item.skuId, item.quantity);
+    }
+
+    // 2. your own history table — mutateOrder is the only place state moves
+    if (order.payment.state !== before.payment || order.delivery.state !== before.delivery) {
+      await tx.orderEvents.insert({
+        orderId,
+        from: before,
+        to: { payment: order.payment.state, delivery: order.delivery.state },
+        at: order.updatedAt,
+      });
+    }
+
+    // 3. anything that must leave the process: an outbox row, not a send
+    if (order.delivery.state === "shipped") {
+      await tx.outbox.insert({ type: "order.shipped", orderId });
+    }
+
+    const written = await tx.writeOrder(order, { ifVersion: order.version });
+    if (!written) throw new CommerceError("version_conflict", "lost the race", { orderId });
+    return written;
+  });
+}
+```
+
+What **not** to put in a handler:
+
+- **No emails, queue publishes, webhooks or HTTP calls.** A write handler can
+  be rolled back or retried, so anything that leaves the process would fire for
+  a change that never happened, or fire twice. Insert an outbox row inside the
+  transaction and act on it after commit, or react to the order the library
+  returns — `markShipped` hands you the saved order, which is a fine place to
+  send the email.
+- **Nothing that assumes `apply` runs once.** If you implement `mutateOrder` as
+  a retry loop, `apply` runs again per attempt. Keep its effects confined to the
+  order object and the `releaseStock` it returns.
+- **No business rules.** Don't reject transitions, cap refunds, or recompute
+  totals — the library already did, and disagreeing silently corrupts state.
+  Validate shapes if you like; make decisions in your application layer, before
+  you call `commerce`.
+- **No SKU writes.** There is no handler for them: your catalog owns SKUs and
+  the library only reads them. The exception is the stock column, which
+  `createOrder` and `mutateOrder` move for you.
+
+Beyond that, the shape is yours. Extra columns the library never sees —
+`customer_id`, `channel`, `warehouse`, your own `status` mirror — are fine;
+just make sure what you return from the read handlers round-trips what you were
+given.
+
+### Where to open a transaction
+
+Only the two write handlers need one. The reads are single lookups, and the
+library snapshots what it reads onto the order, so wrapping them buys nothing.
+
+| Handler | Transaction | What has to be inside it |
+| --- | --- | --- |
+| `loadSkus` | no | One batched read. |
+| `findOrder`, `findOrderByPaymentId`, `findOrderByIdempotencyKey`, `listOrders` | no | One read each. |
+| `createOrder` | **yes** | Every `reserveStock` decrement **and** the order insert. Roll back if any decrement falls short, so a partial reservation can't survive. |
+| `mutateOrder` | **yes** | The order read, the `apply` callback, its `releaseStock`, and the versioned write. Roll back if `apply` throws. |
+
+```ts
+async createOrder({ order, reserveStock }) {
+  return db.transaction(async (tx) => {               // ← both, or neither
+    for (const item of reserveStock) {
+      const changed = await tx.decrementStock(item);  // conditional on stock >= quantity
+      if (!changed) throw new OutOfStock(item);       // rolls back earlier decrements
+    }
+    return { status: "created", order: await tx.insertOrder({ ...order, version: 1 }) };
+  }).catch(toOutOfStockResult);
+}
+
+async mutateOrder(orderId, apply) {
+  return db.transaction(async (tx) => {               // ← read, mutate and write together
+    const order = await tx.loadOrder(orderId);        // or SELECT … FOR UPDATE
+    if (!order) throw new CommerceError("order_not_found", `no order ${orderId}`, { orderId });
+
+    const { releaseStock = [] } = (await apply(order)) ?? {};
+    for (const item of releaseStock) await tx.incrementStock(item);
+
+    const written = await tx.writeOrder(order, { ifVersion: order.version });
+    if (!written) throw new CommerceError("version_conflict", "lost the race", { orderId });
+    return written;
+  });
+}
+```
+
+Four things that make these transactions cheap to run:
+
+- **They never nest.** The library never calls one handler from inside another,
+  so you never need re-entrant transactions or savepoints.
+- **They never span a network call.** Checkout is `createOrder` → *commit* →
+  `createPayment` → `mutateOrder`, so no transaction is ever held open across a
+  call to Mollie. Same for refunds and cancellations.
+- **Default isolation is enough.** `READ COMMITTED` suffices: correctness comes
+  from each write's own predicate — `stock >= quantity` and
+  `version = <what you read>` — not from the isolation level. You do not need
+  `SERIALIZABLE`.
+- **A transaction is not the only answer.** Anything all-or-nothing works: a
+  single guarded SQL statement (see [Reference schema](#reserving-stock-in-one-statement)),
+  a document update, or a compare-and-swap retry loop.
+
 ### Why no adapters ship
 
 There is no `SqliteDatabase` or `PostgresDatabase` to import. Your orders table
@@ -734,9 +866,10 @@ which would quietly break the money mapping.
 
 ### Reserving stock in one statement
 
-`createOrder` has to take stock and store the order together, or neither. In
-Postgres that needs no application-level locking — a data-modifying CTE guarded
-on the shortage set does it in a single statement:
+`createOrder` has to take stock and store the order together, or neither —
+normally a transaction. In Postgres the stock half needs no explicit
+transaction at all: a data-modifying CTE guarded on the shortage set is
+all-or-nothing in a single statement.
 
 ```sql
 WITH wanted AS (
@@ -761,6 +894,10 @@ SELECT sku_id, quantity, stock, missing FROM shortage ORDER BY sku_id;
 Rows returned are your shortages; none means the reservation took. Aggregate
 repeated SKU ids first (`aggregateStock`, exported) or two lines of the same
 SKU will each pass the check and together oversell.
+
+You still want a transaction around *this statement plus the order insert*, so
+the two commit together — see
+[Where to open a transaction](#where-to-open-a-transaction).
 
 ### Operating notes
 

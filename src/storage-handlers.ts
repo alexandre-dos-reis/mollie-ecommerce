@@ -9,23 +9,44 @@ import type { Order, Sku } from "./types.ts";
  *
  * Handlers come in two kinds, and the difference is the contract:
  *
- * - **Reads** (`loadSkus`, `findOrder*`, `listOrders`) are plain lookups.
+ * - **Reads** (`loadSkus`, `findOrder*`, `listOrders`) are plain lookups. One
+ *   statement each; no transaction needed.
  * - **Writes** (`createOrder`, `mutateOrder`) must each apply *everything they
- *   are given, or nothing at all*. They are the only places the commerce layer
- *   relies on atomicity, which is why there are just two of them.
+ *   are given, or nothing at all*. **Wrap each one in a database transaction**
+ *   — they are the only two places the commerce layer relies on atomicity,
+ *   which is why there are just two of them. A single statement that is
+ *   already all-or-nothing works too, as does a compare-and-swap loop.
  *
- * Fulfil them however suits you — a SQL transaction, a document update, a
- * compare-and-swap loop, an in-memory map. If you already have a
- * {@link ../ports.ts Database} adapter, `storageFromDatabase` builds these
- * handlers for you.
+ * The commerce layer never calls one handler from inside another, and never
+ * makes a payment-provider call while one is running, so your transactions
+ * stay short and never nest. Default isolation (`READ COMMITTED`) is enough:
+ * each write handler's own predicate — stock sufficiency, order version — is
+ * what keeps concurrent callers correct.
+ *
+ * Writing your own tables from a write handler is encouraged — status history,
+ * audit rows, your own inventory — since they then commit with the order. What
+ * does not belong in a handler:
+ *
+ * - **Anything that leaves the process**: emails, queue publishes, HTTP calls.
+ *   A write handler can roll back or retry, so insert an outbox row inside the
+ *   transaction and act on it after commit, or react to the order the commerce
+ *   method returns.
+ * - **Business rules**: transitions, refund limits and totals are already
+ *   decided; disagreeing here silently corrupts state.
+ * - **SKU writes**: there is no handler for them. Your catalog owns SKUs and
+ *   the library only reads them — apart from the stock column, which the two
+ *   write handlers move for you.
  *
  * `describeCommerceStorage` in `mollie-ecommerce/storage/conformance` tests an
  * implementation against this contract.
  */
 export interface CommerceStorage {
   /**
-   * Reads the SKUs being bought, for pricing. Ids are unique; missing ones are
-   * simply absent from the result, and the commerce layer reports them.
+   * Reads the SKUs being bought, for pricing. One batched read — no
+   * transaction needed, and the prices are snapshotted onto the order anyway.
+   *
+   * Ids are unique; missing ones are simply absent from the result, and the
+   * commerce layer reports them.
    *
    * @param ids SKU ids, in no particular order.
    */
@@ -33,6 +54,12 @@ export interface CommerceStorage {
 
   /**
    * Persists a new order **and** takes its stock, atomically.
+   *
+   * **Open a transaction** around both: decrement every `reserveStock` entry,
+   * insert the order, commit. Roll back if any decrement falls short, so a
+   * partial reservation can never survive. (In Postgres a single guarded
+   * statement can do it without an explicit transaction — see the README's
+   * reference schema.)
    *
    * Assign the order `version: 1` (or your own first version) and return the
    * stored copy. If any requested stock cannot be satisfied, change nothing
@@ -49,26 +76,38 @@ export interface CommerceStorage {
    * Reads one order, applies `apply` to it, and persists the result —
    * atomically, with the returned stock changes.
    *
-   * The commerce layer expresses every write to an existing order this way, so
-   * this handler is where concurrency is decided: either hold a lock for the
-   * duration, or re-read and retry if the order changed underneath (its
-   * `version` tells you). Reject a lost race by throwing
-   * `CommerceError("version_conflict")` rather than overwriting.
+   * **Open a transaction** around the whole sequence: read the order, call
+   * `apply`, apply `releaseStock`, write the order back. If `apply` throws,
+   * roll back and let the error through — a half-applied mutation is worse
+   * than a failed one.
+   *
+   * This handler is where concurrency is decided, since the commerce layer
+   * expresses every write to an existing order through it. Either hold a lock
+   * for the duration (`SELECT … FOR UPDATE`), or write with the version you
+   * read (`UPDATE … WHERE version = $n`) and retry if no row matched. Reject a
+   * lost race by throwing `CommerceError("version_conflict")` rather than
+   * overwriting.
    *
    * @param orderId The order to change. Throw
    * `CommerceError("order_not_found")` if it does not exist.
    * @param apply Mutates the order in place and returns any stock to give
-   * back. Call it once per attempt, on freshly read state.
+   * back. Call it once per attempt, on freshly read state — if you retry, it
+   * runs again, so keep your own side effects outside it.
    * @returns The persisted order, with its new version.
    */
   mutateOrder(orderId: string, apply: OrderMutator): Promise<Order>;
 
-  /** @param id The order id. `null` when unknown. */
+  /**
+   * Reads one order. A plain lookup — no transaction needed.
+   *
+   * @param id The order id. `null` when unknown.
+   */
   findOrder(id: string): Promise<Order | null>;
 
   /**
    * Looks an order up by its payment id, for webhooks — which carry nothing
-   * else. At most one order per payment id.
+   * else. A plain lookup; at most one order per payment id, so index it
+   * uniquely.
    *
    * @param paymentId The provider's payment id, e.g. `tr_…`.
    */
@@ -76,15 +115,15 @@ export interface CommerceStorage {
 
   /**
    * Looks an order up by the idempotency key checkout was called with, so a
-   * retried checkout replays instead of charging twice. At most one order per
-   * key.
+   * retried checkout replays instead of charging twice. A plain lookup; at
+   * most one order per key, so index it uniquely.
    *
    * @param key The caller's key.
    */
   findOrderByIdempotencyKey(key: string): Promise<Order | null>;
 
   /**
-   * Lists orders oldest-created first.
+   * Lists orders oldest-created first. A plain read.
    *
    * @param query Filters: `paymentState`, `deliveryState`, `customerEmail`,
    * `createdAfter`, `createdBefore`, `limit`, `offset`. State filters accept
