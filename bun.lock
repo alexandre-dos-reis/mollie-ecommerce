@@ -210,7 +210,7 @@
 
     "launch-editor": ["launch-editor@2.14.2", "", { "dependencies": { "picocolors": "^1.1.1", "shell-quote": "^1.10.0" } }, "sha512-NHJEb30MGBCkmZXLZwz25t37QR4aY03ZzPYUJXOJaOa92uWwExI9SBQUuIznBYc1xkD7cJNGX7oc3Nl3sq2kQQ=="],
 
-    "mollie-api-typescript": ["mollie-api-typescript@1.12.44", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-CqV0yCzQLTIMe/G9wgMLiDXVArLYr/aLjUOWug4kMMcpB+GBELzvhkFz08MK1z4qytL7vUlcInXKuXIIW6O05w=="],
+    "mollie-api-typescript": ["mollie-api-typescript@1.12.45", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-JwNT1C47ACk89FnE/9aQX3YwxC8Eis+mc7SNUyja9q0LF5JN3Y4s783gan1d4m3PrOuhgGXAIrj2BZpeGTl1Vw=="],
 
     "obug": ["obug@3.0.0", "", {}, "sha512-5vvB5+W7ePv+p3uqxi+RcW1XAzLW0/hxt3/4X4Lc4qHudzOhmBiBwOY6DRob4WnanAEGvNcLjF+KNOufrUoEQw=="],
 
