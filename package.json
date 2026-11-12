@@ -1,6 +1,6 @@
 {
   "name": "mollie-ecommerce",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A SKU, order and delivery lifecycle layer over Mollie — the minimum an ecommerce flow needs.",
   "keywords": [
     "mollie",
