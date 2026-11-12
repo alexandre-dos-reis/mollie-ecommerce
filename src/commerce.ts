@@ -10,6 +10,7 @@ import {
   type OrderQuery,
   type PaymentGateway,
   type PaymentSnapshot,
+  type RefundSnapshot,
   type StockChange,
 } from "./ports.ts";
 import type { CommerceStorage, OrderMutation } from "./storage-handlers.ts";
@@ -238,10 +239,24 @@ export function createCommerce(options: CommerceOptions) {
    * Mutates `order` to reflect a gateway snapshot, including knock-on effects,
    * and reports any stock the storage handler should give back.
    */
-  function reconcile(order: Order, snapshot: PaymentSnapshot): OrderMutation {
+  function reconcile(
+    order: Order,
+    snapshot: PaymentSnapshot,
+    refunds?: RefundSnapshot[],
+  ): OrderMutation {
     const wasPaid = isPaid(order);
-    order.payment.state = derivePaymentState(snapshot, order.total);
-    if (snapshot.amountRefunded) order.payment.amountRefunded = snapshot.amountRefunded;
+    if (refunds) mergeRefunds(order, refunds);
+    const committed = committedRefunds(order);
+    order.payment.state = derivePaymentState(snapshot, order.total, committed);
+    if (snapshot.amountRefunded) {
+      // Never below what the refunds we know about already commit: Mollie
+      // counts a refund in `amountRefunded` only once it is *executed*, which
+      // happens hours after it is accepted. Taking its figure as-is would
+      // un-refund an order between the two -- back to `paid`, with the money
+      // already owed to the customer.
+      order.payment.amountRefunded =
+        snapshot.amountRefunded.cents >= committed.cents ? snapshot.amountRefunded : committed;
+    }
     if (snapshot.checkoutUrl) order.payment.checkoutUrl = snapshot.checkoutUrl;
 
     if (!wasPaid && isPaid(order) && order.delivery.state === "not_started") {
@@ -257,6 +272,64 @@ export function createCommerce(options: CommerceOptions) {
     }
 
     return {};
+  }
+
+  /**
+   * The refunds the provider reports, folded into the order by id.
+   *
+   * A refund the order does not know about is kept, not dropped: it was
+   * created outside this library -- from the Mollie dashboard, typically --
+   * and the order is the place where that becomes visible.
+   */
+  function mergeRefunds(order: Order, refunds: RefundSnapshot[]): void {
+    const known = new Map(order.refunds.map((refund) => [refund.id, refund]));
+
+    for (const snapshot of refunds) {
+      const found = known.get(snapshot.id);
+
+      if (found) {
+        found.state = snapshot.state;
+        found.amount = snapshot.amount;
+        continue;
+      }
+
+      order.refunds.push({
+        id: snapshot.id,
+        amount: snapshot.amount,
+        state: snapshot.state,
+        createdAt: now(),
+      });
+    }
+  }
+
+  /**
+   * What the refunds of this order commit, whether or not the provider has
+   * executed them yet. A refund that failed or was canceled commits nothing --
+   * the money never left.
+   */
+  function committedRefunds(order: Order): Money {
+    const live = order.refunds.filter((refund) => !VOID_REFUND_STATES.includes(refund.state));
+
+    return sum(
+      live.map((refund) => refund.amount),
+      order.total.currency,
+    );
+  }
+
+  /**
+   * The refunds to settle before reconciling, or `undefined` when there is
+   * nothing to settle: no gateway support, or every refund already final.
+   * Saves a call on the common path -- most webhooks are about the payment.
+   */
+  async function refundsToSettle(
+    order: Order,
+    paymentId: string,
+  ): Promise<RefundSnapshot[] | undefined> {
+    if (!gateway.listRefunds) return undefined;
+
+    const settling = order.refunds.some((refund) => !FINAL_REFUND_STATES.includes(refund.state));
+
+    return settling ? await gateway.listRefunds(paymentId) : undefined;
   }
 
   async function mustGetOrder(orderId: string): Promise<Order> {
@@ -410,7 +483,8 @@ export function createCommerce(options: CommerceOptions) {
     if (!order.payment.id) return order;
 
     const snapshot = await gateway.getPayment(order.payment.id);
-    return mutate(orderId, (current) => reconcile(current, snapshot));
+    const refunds = await refundsToSettle(order, order.payment.id);
+    return mutate(orderId, (current) => reconcile(current, snapshot, refunds));
   }
 
   async function handleWebhook(paymentId: string): Promise<Order | null> {
@@ -418,7 +492,8 @@ export function createCommerce(options: CommerceOptions) {
     if (!known) return null;
 
     const snapshot = await gateway.getPayment(paymentId);
-    return mutate(known.id, (current) => reconcile(current, snapshot));
+    const refunds = await refundsToSettle(known, paymentId);
+    return mutate(known.id, (current) => reconcile(current, snapshot, refunds));
   }
 
   /* --------------------------------------------------------------- refund */
@@ -692,6 +767,12 @@ export type Commerce = ReturnType<typeof createCommerce>;
 /** Payment states after which no money will move, so stock can be released. */
 const DEAD_PAYMENT_STATES: readonly PaymentState[] = ["canceled", "expired", "failed"];
 
+/** A refund Mollie will not move again: nothing left to settle. */
+const FINAL_REFUND_STATES: readonly Refund["state"][] = ["refunded", "failed", "canceled"];
+
+/** A refund that commits no money -- it never left, or it came back. */
+const VOID_REFUND_STATES: readonly Refund["state"][] = ["failed", "canceled"];
+
 /* ---------------------------------------------------------------- helpers */
 
 /** Freezes a catalog SKU into an order line at the given quantity. */
@@ -742,9 +823,19 @@ function amountForLines(
 }
 
 /** Mollie reports refunds on the payment, so `paid` can mean partly refunded. */
-function derivePaymentState(snapshot: PaymentSnapshot, total: Money): PaymentState {
+/**
+ * `committed` is what the order's own refunds commit, which leads the
+ * provider's `amountRefunded` while a refund is still on its way: the state
+ * must follow the larger of the two, or an accepted refund would read as
+ * `paid` until the provider executes it.
+ */
+function derivePaymentState(
+  snapshot: PaymentSnapshot,
+  total: Money,
+  committed: Money,
+): PaymentState {
   if (snapshot.state !== "paid") return snapshot.state;
-  const refunded = snapshot.amountRefunded?.cents ?? 0;
+  const refunded = Math.max(snapshot.amountRefunded?.cents ?? 0, committed.cents);
   if (refunded <= 0) return "paid";
-  return subtract(total, snapshot.amountRefunded!).cents <= 0 ? "refunded" : "partially_refunded";
+  return total.cents - refunded <= 0 ? "refunded" : "partially_refunded";
 }

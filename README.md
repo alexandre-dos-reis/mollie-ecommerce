@@ -183,7 +183,8 @@ is reserved), `currency_mismatch`.
 ### `syncOrder(orderId) → Order`
 
 Re-reads the payment from Mollie and folds it into the order: payment state,
-refunded amount, and the delivery and stock consequences. Idempotent. Use it
+refunded amount, the state of each refund still on its way, and the delivery
+and stock consequences. Idempotent. Use it
 when you cannot receive webhooks, when the customer hits your redirect URL, or
 to reconcile on a schedule. Returns the order unchanged if no payment exists
 yet. Throws `order_not_found`, `gateway_error`.
@@ -215,8 +216,17 @@ Refunds a paid order: in full, by amount, or by line. Moves money only — see
 
 Omit `amount` and `lines` to refund everything still refundable. Throws
 `order_not_found`, `not_refundable` (unpaid, or non-positive amount),
-`refund_too_large`, `currency_mismatch`. Mollie reports refunds as `pending`;
-`syncOrder` reconciles the final state.
+`refund_too_large`, `currency_mismatch`.
+
+Mollie accepts a refund in `pending` and executes it hours later, so the state
+you get back is not the last word: `syncOrder` and `handleWebhook` settle it,
+reading the refunds back from Mollie while the order still holds one that is
+neither `refunded`, `failed` nor `canceled`. Until then the order counts the
+refund as committed — an accepted refund reads as `partially_refunded` right
+away, and only a `failed` or `canceled` one gives the money back.
+
+A custom gateway opts into this by implementing `listRefunds(paymentId)`;
+without it, refund states stay as they were created.
 
 ### `markReady(orderId) → Order`
 
@@ -495,6 +505,25 @@ export async function reconcile() {
       console.warn("reconcile failed", order.id, error);
     }
   }
+}
+```
+
+A refund settles on the same schedule, and it needs its own sweep: an order
+with a refund in flight is `partially_refunded` or `refunded`, so the filter
+above never picks it up, and the webhook that would have settled it is the one
+that can get lost.
+
+```ts
+// Same pass, second half: orders whose refunds Mollie has not executed yet.
+const refunding = await commerce.findOrders({
+  paymentState: ["partially_refunded", "refunded"],
+  limit: 200,
+});
+
+for (const order of refunding) {
+  const settled = (state: string) => ["refunded", "failed", "canceled"].includes(state);
+  if (order.refunds.every((refund) => settled(refund.state))) continue;
+  await commerce.syncOrder(order.id);
 }
 ```
 

@@ -38,6 +38,21 @@ export interface PaymentGateway {
   getPayment(paymentId: string): Promise<PaymentSnapshot>;
   cancelPayment(paymentId: string): Promise<PaymentSnapshot>;
   createRefund(input: CreateRefundInput): Promise<RefundSnapshot>;
+  /**
+   * Every refund the provider holds for this payment, with its current state.
+   *
+   * A refund is born `pending` and reaches `refunded` or `failed` minutes or
+   * hours later, so the state captured at creation goes stale -- and a payment
+   * snapshot carries only the refunded *total*, never the individual states.
+   * {@link Commerce.syncOrder} and {@link Commerce.handleWebhook} call this to
+   * settle them, and only while the order still holds a refund that is not
+   * final.
+   *
+   * Optional: a gateway that cannot list refunds simply leaves the states as
+   * they were created, which is what every gateway did before this method
+   * existed.
+   */
+  listRefunds?(paymentId: string): Promise<RefundSnapshot[]>;
 }
 
 export type CreatePaymentInput = {
