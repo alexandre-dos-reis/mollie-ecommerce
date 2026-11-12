@@ -288,6 +288,69 @@ for (const [name, makeDb] of Object.entries(databases)) {
       expect(second.order.refunds).toHaveLength(2);
     });
 
+    test("a refund reaches its final state through a sync", async () => {
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
+      gateway.setState(order.payment.id!, "paid");
+      await commerce.syncOrder(order.id);
+
+      const { refund } = await commerce.refund({ orderId: order.id, amount: money(500, "EUR") });
+      expect(refund.state).toBe("pending");
+
+      // The provider executes it hours later, and says so by calling the
+      // webhook of the *payment* -- a refund has no webhook of its own.
+      gateway.settleRefund(order.payment.id!, refund.id, "refunded");
+      const synced = await commerce.syncOrder(order.id);
+
+      expect(synced.refunds).toHaveLength(1);
+      expect(synced.refunds[0]!.state).toBe("refunded");
+      expect(synced.payment.amountRefunded).toEqual(money(500, "EUR"));
+      expect(synced.payment.state).toBe("partially_refunded");
+    });
+
+    test("a sync while a refund is pending does not un-refund the order", async () => {
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
+      gateway.setState(order.payment.id!, "paid");
+      await commerce.syncOrder(order.id);
+      await commerce.refund({ orderId: order.id });
+
+      // The provider still reports `amountRefunded: 0` -- the refund is
+      // accepted, not executed. The order must not fall back to `paid`.
+      const synced = await commerce.syncOrder(order.id);
+      expect(synced.payment.state).toBe("refunded");
+      expect(synced.payment.amountRefunded).toEqual(money(1250, "EUR"));
+      expect(synced.refunds[0]!.state).toBe("pending");
+    });
+
+    test("a failed refund gives the money back to the order", async () => {
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
+      gateway.setState(order.payment.id!, "paid");
+      await commerce.syncOrder(order.id);
+
+      const { refund } = await commerce.refund({ orderId: order.id, amount: money(500, "EUR") });
+      gateway.settleRefund(order.payment.id!, refund.id, "failed");
+      const synced = await commerce.syncOrder(order.id);
+
+      expect(synced.refunds[0]!.state).toBe("failed");
+      expect(synced.payment.amountRefunded).toEqual(money(0, "EUR"));
+      expect(synced.payment.state).toBe("paid");
+    });
+
+    test("a refund created outside the library shows up on the order", async () => {
+      const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
+      gateway.setState(order.payment.id!, "paid");
+      await commerce.syncOrder(order.id);
+
+      // One refund of ours, so the order has something to settle, and one
+      // made straight at the provider -- from its dashboard, typically.
+      await commerce.refund({ orderId: order.id, amount: money(200, "EUR") });
+      await gateway.createRefund({ paymentId: order.payment.id!, amount: money(300, "EUR") });
+
+      const synced = await commerce.syncOrder(order.id);
+      expect(synced.refunds).toHaveLength(2);
+      expect(synced.payment.amountRefunded).toEqual(money(500, "EUR"));
+      expect(synced.payment.state).toBe("partially_refunded");
+    });
+
     test("refunds are bounded by what is left", async () => {
       const { order } = await commerce.checkout({ items: [{ skuId: "mug" }] });
       await expect(commerce.refund({ orderId: order.id })).rejects.toThrow(/not paid/);

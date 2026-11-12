@@ -97,6 +97,26 @@ export function createMollieGateway(options: MollieGatewayOptions = {}): Payment
         amount: refund.amount ? fromMollieAmount(refund.amount) : input.amount,
       };
     },
+
+    async listRefunds(paymentId: string): Promise<RefundSnapshot[]> {
+      const pages = await guard("listRefunds", () => client.refunds.list({ paymentId }));
+      const refunds: RefundSnapshot[] = [];
+
+      // Paginated at 50 by default, and a payment can hold more -- a refund
+      // per returned line, over a few months. Walking the pages costs one
+      // extra call only when there is an extra page.
+      for await (const page of pages) {
+        for (const refund of page.result.embedded.refunds) {
+          refunds.push({
+            id: refund.id,
+            state: refund.status as RefundSnapshot["state"],
+            amount: fromMollieAmount(refund.amount),
+          });
+        }
+      }
+
+      return refunds;
+    },
   };
 }
 
